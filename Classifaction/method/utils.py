@@ -261,6 +261,120 @@ def compute_voronoi_vertices(centroids_dict, max_vertices=50):
 # Now using fast geometric methods instead
 
 
+def find_safe_border_targets(forget_centroids, retain_centroids, n_targets, min_forget_distance=2.0):
+    """Find safe border positions between retain classes with 2-round defense from forget classes
+    
+    Args:
+        forget_centroids: Dict of forget class centroids
+        retain_centroids: Dict of retain class centroids
+        n_targets: Number of target positions needed
+        min_forget_distance: Minimum distance from any forget centroid (2-round defense)
+    
+    Returns:
+        Tensor of safe border target positions
+    """
+    if not forget_centroids or not retain_centroids:
+        print("Warning: Missing centroids for border target generation")
+        return None
+    
+    print(f"Finding {n_targets} safe border targets between retain classes...")
+    print(f"2-round defense: ensuring min distance {min_forget_distance:.2f} from forget centroids")
+    
+    # Convert to tensors
+    forget_tensor = torch.stack(list(forget_centroids.values()))
+    retain_tensor = torch.stack(list(retain_centroids.values()))
+    retain_class_ids = list(retain_centroids.keys())
+    
+    safe_targets = []
+    max_attempts = 1000  # Prevent infinite loops
+    attempts = 0
+    
+    # Generate border positions between pairs of retain classes
+    retain_pairs = list(combinations(range(len(retain_tensor)), 2))
+    random.shuffle(retain_pairs)  # Randomize order
+    
+    for i, j in retain_pairs:
+        if len(safe_targets) >= n_targets:
+            break
+            
+        attempts += 1
+        if attempts > max_attempts:
+            print(f"Warning: Reached max attempts ({max_attempts}), using {len(safe_targets)} targets")
+            break
+        
+        # Get pair of retain centroids
+        centroid_a = retain_tensor[i]
+        centroid_b = retain_tensor[j]
+        
+        # Generate multiple border points between this pair
+        for alpha in [0.3, 0.4, 0.5, 0.6, 0.7]:  # Various positions along the border
+            if len(safe_targets) >= n_targets:
+                break
+            
+            # Border position between two retain centroids
+            border_point = alpha * centroid_a + (1 - alpha) * centroid_b
+            
+            # Check 2-round defense: ensure safe distance from ALL forget centroids
+            distances_to_forget = torch.norm(forget_tensor - border_point.unsqueeze(0), dim=1)
+            min_distance_to_forget = torch.min(distances_to_forget).item()
+            
+            # Also check that this point is actually on the border (roughly equidistant from both retain centroids)
+            dist_to_a = torch.norm(border_point - centroid_a).item()
+            dist_to_b = torch.norm(border_point - centroid_b).item()
+            border_balance = abs(dist_to_a - dist_to_b) / (dist_to_a + dist_to_b)
+            
+            # Accept if: 1) Safe distance from forget classes, 2) Good border balance
+            if min_distance_to_forget >= min_forget_distance and border_balance < 0.3:
+                safe_targets.append(border_point)
+                print(f"Safe border target {len(safe_targets)}: between retain {retain_class_ids[i]}-{retain_class_ids[j]}, "
+                      f"min_forget_dist={min_distance_to_forget:.3f}")
+    
+    # If we need more targets, generate some with perturbations
+    while len(safe_targets) < n_targets and attempts < max_attempts:
+        attempts += 1
+        
+        # Pick a random existing safe target and perturb it slightly
+        if len(safe_targets) > 0:
+            base_target = safe_targets[random.randint(0, len(safe_targets) - 1)]
+            
+            # Small random perturbation
+            perturbation = torch.randn_like(base_target) * 0.1
+            perturbed_target = base_target + perturbation
+            
+            # Check if perturbed version is still safe
+            distances_to_forget = torch.norm(forget_tensor - perturbed_target.unsqueeze(0), dim=1)
+            min_distance_to_forget = torch.min(distances_to_forget).item()
+            
+            if min_distance_to_forget >= min_forget_distance:
+                safe_targets.append(perturbed_target)
+                print(f"Safe perturbed target {len(safe_targets)}: min_forget_dist={min_distance_to_forget:.3f}")
+        else:
+            # Fallback: use midpoint between most distant retain centroids
+            distances_between_retain = torch.cdist(retain_tensor, retain_tensor)
+            max_dist_indices = torch.unravel_index(torch.argmax(distances_between_retain), distances_between_retain.shape)
+            if max_dist_indices[0] != max_dist_indices[1]:
+                midpoint = (retain_tensor[max_dist_indices[0]] + retain_tensor[max_dist_indices[1]]) / 2
+                safe_targets.append(midpoint)
+                print(f"Fallback target {len(safe_targets)}: midpoint of most distant retain centroids")
+    
+    if len(safe_targets) == 0:
+        print("Warning: No safe border targets found! Using retain centroid midpoints as fallback")
+        # Emergency fallback: use midpoints of retain centroids
+        for i in range(min(n_targets, len(retain_pairs))):
+            idx1, idx2 = retain_pairs[i]
+            fallback_target = (retain_tensor[idx1] + retain_tensor[idx2]) / 2
+            safe_targets.append(fallback_target)
+    
+    # Pad with duplicates if needed
+    while len(safe_targets) < n_targets:
+        safe_targets.append(safe_targets[0] if safe_targets else retain_tensor[0])
+    
+    result_targets = torch.stack(safe_targets[:n_targets])
+    print(f"Generated {len(result_targets)} safe border targets with 2-round forget defense")
+    
+    return result_targets
+
+
 def select_target_vertices(vertices, degrees, n_targets):
     """Select target vertices prioritizing high-degree ones"""
     if vertices is None or len(vertices) == 0:

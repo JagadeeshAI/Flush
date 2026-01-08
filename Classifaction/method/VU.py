@@ -10,19 +10,20 @@ from codes.utils import get_model
 from method.utils import (
     extract_embeddings, extract_features, compute_class_centroids, compute_voronoi_vertices,
     select_target_vertices, assign_targets_to_classes, compute_forget_loss, compute_retain_loss,
-    compute_classification_loss, compute_group_sparse_regularization
+    compute_classification_loss, compute_group_sparse_regularization, find_safe_border_targets
 )
 from tqdm import tqdm
 
 
 class VoronoiUnlearning:
-    def __init__(self, model_path, forget_classes, retain_classes, device="cuda", method="simple", use_regularization=False, lambda_reg=1e-3):
+    def __init__(self, model_path, forget_classes, retain_classes, device="cuda", method="simple", use_regularization=False, lambda_reg=1e-3, min_forget_distance=2.0):
         self.device = device
         self.forget_classes = forget_classes
         self.retain_classes = retain_classes
         self.method = method
         self.use_regularization = use_regularization
         self.lambda_reg = lambda_reg
+        self.scale_factor = min_forget_distance  # Keep same variable name for compatibility
         
         # Load model
         num_classes = len(forget_classes) + len(retain_classes)
@@ -52,15 +53,12 @@ class VoronoiUnlearning:
         gc.collect()
         torch.cuda.empty_cache() if torch.cuda.is_available() else None
         
-        print(f"Computing Voronoi vertices for {len(self.retain_centroids)} retain classes...")
-        vertices, degrees = compute_voronoi_vertices(self.retain_centroids, max_vertices=50)
-        
-        print(f"Selecting {len(self.forget_classes)} target vertices...")
-        target_vertices = select_target_vertices(vertices, degrees, len(self.forget_classes))
-        
-        # Clear intermediate variables
-        del vertices, degrees
-        gc.collect()
+        # Generate safe border targets between retain classes with 2-round forget defense
+        print(f"Generating safe border targets between retain classes...")
+        target_vertices = find_safe_border_targets(
+            self.forget_centroids, self.retain_centroids, len(self.forget_classes), 
+            min_forget_distance=self.scale_factor  # Reuse scale_factor as min_distance parameter
+        )
         
         print(f"Assigning targets to forget classes using '{self.method}' method...")
         self.target_assignment = assign_targets_to_classes(
@@ -82,7 +80,7 @@ class VoronoiUnlearning:
         embeddings = extract_features(self.model, imgs)
         
         # L_forget = Σ MSE(embedding(x_forget), assigned_vertex)
-        loss_forget = compute_forget_loss(embeddings, labels, self.target_assignment)
+        loss_forget = compute_forget_loss(embeddings, labels, self.target_assignment)*2
         
         # Add group sparse regularization if enabled and after 1000 steps
         if self.use_regularization and global_step > 1000:
@@ -112,7 +110,7 @@ class VoronoiUnlearning:
         loss_retain_ce = nn.CrossEntropyLoss()(logits, labels)
         
         # Total retain loss
-        loss_retain_total = loss_retain_mse + loss_retain_ce*0.1
+        loss_retain_total = loss_retain_mse + loss_retain_ce*0.5
         
         # Add group sparse regularization if enabled and after 1000 steps
         if self.use_regularization and global_step > 1000:
@@ -206,7 +204,7 @@ class VoronoiUnlearning:
             step_losses['count'] += 1
             
             # Process retain batch only every 5th step (5:1 ratio)
-            if (step_idx + 1) % 5 == 0:
+            if (step_idx + 1) % 1 == 0:
                 try:
                     retain_batch = next(retain_iter)
                 except StopIteration:
@@ -326,6 +324,8 @@ def main():
                        help='Use group sparse regularization (default: no)')
     parser.add_argument('--lambda-reg', type=float, default=0.01,
                        help='Regularization lambda weight (default: 1e-3)')
+    parser.add_argument('--min-forget-distance', type=float, default=2.0,
+                       help='Minimum distance from forget centroids for border targets (2-round defense)')
     
     args = parser.parse_args()
     
@@ -346,13 +346,15 @@ def main():
     print(f"Batch size: {args.batch_size}")
     print(f"Learning rate: {args.lr}")
     print(f"Use regularization: {use_reg}")
+    print(f"Min forget distance: {args.min_forget_distance} (2-round defense)")
     if use_reg:
         print(f"Lambda regularization: {args.lambda_reg}")
         print(f"Note: Regularization will start after step 1000")
     
     # Create Voronoi Unlearning instance with selected method
     vu = VoronoiUnlearning(MODEL_PATH, forget_classes, retain_classes, DEVICE, 
-                          method=args.method, use_regularization=use_reg, lambda_reg=args.lambda_reg)
+                          method=args.method, use_regularization=use_reg, lambda_reg=args.lambda_reg, 
+                          min_forget_distance=args.min_forget_distance)
     
     # Run unlearning
     unlearned_model = vu.unlearn(
