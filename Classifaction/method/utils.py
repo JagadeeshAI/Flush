@@ -1,0 +1,405 @@
+import torch
+import torch.nn as nn
+import numpy as np
+from itertools import combinations
+import random
+
+
+def extract_features(model, imgs):
+    """Extract features from penultimate layer for LoRA models"""
+    # For LoRA wrapped vision transformer
+    if hasattr(model, 'base_model'):
+        # Access the underlying vision transformer
+        vit = model.base_model.model if hasattr(model.base_model, 'model') else model.base_model
+        
+        # Forward through vision transformer layers (before head)
+        x = vit.patch_embed(imgs)
+        cls_token = vit.cls_token.expand(x.shape[0], -1, -1)
+        
+        # Check if dist_token exists (for DeiT models)
+        if hasattr(vit, 'dist_token') and vit.dist_token is not None:
+            x = torch.cat((cls_token, vit.dist_token.expand(x.shape[0], -1, -1), x), dim=1)
+        else:
+            x = torch.cat((cls_token, x), dim=1)
+            
+        x = vit.pos_drop(x + vit.pos_embed)
+        x = vit.blocks(x)
+        x = vit.norm(x)
+        features = x[:, 0]  # CLS token features
+    else:
+        # For regular model
+        x = model.patch_embed(imgs)
+        cls_token = model.cls_token.expand(x.shape[0], -1, -1)
+        x = torch.cat((cls_token, x), dim=1)
+        x = model.pos_drop(x + model.pos_embed)
+        x = model.blocks(x)
+        x = model.norm(x)
+        features = x[:, 0]  # CLS token features
+    
+    return features
+
+
+def extract_embeddings(model, dataloader, device):
+    """Extract embeddings from model's penultimate layer"""
+    import gc
+    model.eval()
+    embeddings = []
+    labels = []
+    
+    with torch.no_grad():
+        for i, (imgs, lbls) in enumerate(dataloader):
+            imgs = imgs.to(device)
+            
+            # Process in smaller chunks to reduce memory
+            chunk_size = min(16, imgs.size(0))
+            chunk_features = []
+            
+            for j in range(0, imgs.size(0), chunk_size):
+                chunk = imgs[j:j+chunk_size]
+                features = extract_features(model, chunk)
+                chunk_features.append(features.cpu())
+                del features, chunk
+                
+            # Combine chunks
+            batch_features = torch.cat(chunk_features, dim=0)
+            embeddings.append(batch_features)
+            labels.extend(lbls.tolist())
+            
+            # Clear memory every few batches
+            del imgs, lbls, chunk_features, batch_features
+            if i % 5 == 0:
+                torch.cuda.empty_cache() if torch.cuda.is_available() else None
+                gc.collect()
+    
+    result_embeddings = torch.cat(embeddings, dim=0)
+    del embeddings
+    gc.collect()
+    
+    return result_embeddings, torch.tensor(labels)
+
+
+def compute_class_centroids(embeddings, labels, class_list):
+    """Compute centroids for specified classes"""
+    centroids = {}
+    
+    for class_id in class_list:
+        class_mask = labels == class_id
+        if class_mask.sum() > 0:
+            centroids[class_id] = embeddings[class_mask].mean(dim=0)
+    
+    return centroids
+
+
+def compute_true_voronoi_vertex(selected_centroids, max_iterations=100, tolerance=1e-6):
+    """Compute true Voronoi vertex equidistant from selected centroids using iterative optimization"""
+    k, dim = selected_centroids.shape
+    
+    if k < 2:
+        return None
+    
+    # Initialize at mean of centroids
+    vertex = selected_centroids.mean(dim=0)
+    
+    for iteration in range(max_iterations):
+        # Compute distances to all selected centroids
+        distances = torch.norm(selected_centroids - vertex.unsqueeze(0), dim=1)
+        
+        # Check if already equidistant (within tolerance)
+        if torch.std(distances) < tolerance:
+            break
+        
+        # Gradient descent to minimize distance variance
+        # Compute gradient of distance variance with respect to vertex
+        mean_dist = distances.mean()
+        grad = torch.zeros_like(vertex)
+        
+        for i in range(k):
+            diff = vertex - selected_centroids[i]
+            dist = distances[i]
+            if dist > 0:
+                grad += 2 * (dist - mean_dist) * diff / dist
+        
+        # Update vertex position
+        lr = 0.01
+        vertex = vertex - lr * grad
+    
+    # Verify final equidistance quality
+    final_distances = torch.norm(selected_centroids - vertex.unsqueeze(0), dim=1)
+    variance = torch.var(final_distances)
+    
+    # Only return if reasonably equidistant
+    if variance < tolerance * 10:
+        return vertex
+    else:
+        return None
+
+
+def compute_circumcenter_nd(three_centroids):
+    """Compute circumcenter-like point for 3 centroids in high-dimensional space"""
+    if three_centroids.shape[0] != 3:
+        return None
+    
+    # Use circumcenter formula adapted for high dimensions
+    a, b, c = three_centroids[0], three_centroids[1], three_centroids[2]
+    
+    # Vectors
+    ab = b - a
+    ac = c - a
+    
+    # Check if points are too close (nearly collinear)
+    if torch.norm(ab) < 1e-8 or torch.norm(ac) < 1e-8:
+        return (a + b + c) / 3  # Fallback to centroid
+    
+    # Use generalized circumcenter formula for n-dimensional space
+    # Find point equidistant from all three points
+    ab_norm_sq = torch.norm(ab) ** 2
+    ac_norm_sq = torch.norm(ac) ** 2
+    ab_dot_ac = torch.dot(ab, ac)
+    
+    # Determinant check for non-collinear points
+    det = ab_norm_sq * ac_norm_sq - ab_dot_ac ** 2
+    if abs(det) < 1e-8:
+        return (a + b + c) / 3  # Fallback to centroid
+    
+    # Solve for coefficients that make point equidistant from a, b, c
+    # This is a simplified approach that works in high dimensions
+    alpha = (ac_norm_sq - ab_dot_ac) / det
+    beta = (ab_norm_sq - ab_dot_ac) / det
+    
+    # Compute circumcenter
+    circumcenter = a + alpha * ab + beta * ac
+    
+    # Verify equidistance quality
+    dist_a = torch.norm(circumcenter - a)
+    dist_b = torch.norm(circumcenter - b) 
+    dist_c = torch.norm(circumcenter - c)
+    
+    # If not reasonably equidistant, fall back to centroid
+    distances = torch.stack([dist_a, dist_b, dist_c])
+    if torch.std(distances) / torch.mean(distances) > 0.1:
+        return (a + b + c) / 3
+    
+    return circumcenter
+
+
+def compute_voronoi_vertices(centroids_dict, max_vertices=50):
+    """Compute true Voronoi vertices equidistant from multiple centroids"""
+    import gc
+    from tqdm import tqdm
+    
+    centroids = torch.stack(list(centroids_dict.values()))
+    n_centroids = centroids.shape[0]
+    vertices = []
+    degrees = []
+    
+    print(f"Computing true Voronoi vertices for {n_centroids} centroids...")
+    
+    # Start with k=3 and k=2 for stability in high dimensions
+    max_k = min(n_centroids, 3)  # Limit to k=3 for high-dimensional stability
+    
+    pbar = tqdm(desc="Computing Voronoi vertices", total=max_vertices)
+    
+    for k in [3, 2]:  # Prioritize k=3, then k=2
+        if len(vertices) >= max_vertices or k > n_centroids:
+            break
+            
+        # Sample combinations to avoid exponential explosion
+        all_combinations = list(combinations(range(n_centroids), k))
+        max_combinations = min(len(all_combinations), 100)  # Further reduced
+        sampled_combinations = random.sample(all_combinations, max_combinations) if len(all_combinations) > max_combinations else all_combinations
+        
+        for combo in sampled_combinations:
+            if len(vertices) >= max_vertices:
+                break
+            
+            selected_centroids = centroids[list(combo)]
+            
+            # Compute Voronoi vertex
+            if k == 3:
+                vertex = compute_circumcenter_nd(selected_centroids)
+            elif k == 2:
+                # For k=2, midpoint is the true Voronoi vertex
+                vertex = selected_centroids.mean(dim=0)
+            else:
+                vertex = compute_true_voronoi_vertex(selected_centroids)
+            
+            if vertex is not None:
+                # Simple validation: check if vertex is reasonable
+                all_distances = torch.norm(centroids - vertex.unsqueeze(0), dim=1)
+                
+                # Check if the k selected centroids are among the nearest
+                sorted_indices = torch.argsort(all_distances)
+                k_nearest = sorted_indices[:min(k+1, len(sorted_indices))]  # Allow some tolerance
+                
+                if len(set(combo).intersection(set(k_nearest.tolist()))) >= k-1:  # At least k-1 should be close
+                    vertices.append(vertex)
+                    degrees.append(k)
+                    pbar.update(1)
+    
+    pbar.close()
+    
+    # Always add some high-quality midpoints if we need more
+    if len(vertices) < max_vertices:
+        print("Adding additional midpoints...")
+        remaining = max_vertices - len(vertices)
+        pairs = list(combinations(range(n_centroids), 2))
+        random.shuffle(pairs)
+        
+        for i, j in pairs[:remaining]:
+            midpoint = (centroids[i] + centroids[j]) / 2
+            vertices.append(midpoint)
+            degrees.append(2)
+    
+    del centroids
+    gc.collect()
+    
+    print(f"Generated {len(vertices)} Voronoi vertices")
+    return torch.stack(vertices) if vertices else None, degrees
+
+
+# Removed expensive solve_equidistant_point function
+# Now using fast geometric methods instead
+
+
+def select_target_vertices(vertices, degrees, n_targets):
+    """Select target vertices prioritizing high-degree ones"""
+    if vertices is None or len(vertices) == 0:
+        return None
+    
+    # Sort by degree (descending)
+    sorted_indices = sorted(range(len(degrees)), key=lambda i: degrees[i], reverse=True)
+    
+    if len(vertices) >= n_targets:
+        selected_indices = sorted_indices[:n_targets]
+        return vertices[selected_indices]
+    else:
+        # Need to interpolate additional vertices
+        selected_vertices = [vertices[i] for i in sorted_indices]
+        
+        # Generate additional vertices by interpolation
+        while len(selected_vertices) < n_targets:
+            idx1, idx2 = random.sample(range(len(vertices)), 2)
+            alpha = random.uniform(0.3, 0.7)
+            new_vertex = alpha * vertices[idx1] + (1 - alpha) * vertices[idx2]
+            selected_vertices.append(new_vertex)
+        
+        return torch.stack(selected_vertices[:n_targets])
+
+
+def assign_targets_to_classes(target_vertices, forget_classes, forget_centroids=None, method="simple"):
+    """Assign target vertices to forget classes
+    
+    Args:
+        target_vertices: Voronoi vertices
+        forget_classes: List of forget class IDs
+        forget_centroids: Dict of forget class centroids (for adaptive method)
+        method: "simple" (random) or "advance" (nearest)
+    """
+    if target_vertices is None:
+        return {}
+    
+    assignment = {}
+    
+    if method == "simple":
+        # Random assignment (original method)
+        shuffled_targets = target_vertices[torch.randperm(len(target_vertices))]
+        for i, class_id in enumerate(forget_classes):
+            target_idx = i % len(shuffled_targets)
+            assignment[class_id] = shuffled_targets[target_idx]
+    
+    elif method == "advance":
+        # Nearest target assignment (adaptive method)
+        if forget_centroids is None:
+            print("Warning: No forget centroids provided, falling back to random assignment")
+            return assign_targets_to_classes(target_vertices, forget_classes, None, "simple")
+        
+        print("Using adaptive nearest target assignment...")
+        total_distance = 0.0
+        
+        for class_id in forget_classes:
+            if class_id in forget_centroids:
+                forget_centroid = forget_centroids[class_id]
+                
+                # Compute distances to all target vertices
+                distances = torch.norm(target_vertices - forget_centroid.unsqueeze(0), dim=1)
+                
+                # Assign to nearest vertex
+                nearest_idx = torch.argmin(distances)
+                assignment[class_id] = target_vertices[nearest_idx]
+                
+                # Track distance for reporting
+                total_distance += distances[nearest_idx].item()
+        
+        # Report average travel distance
+        if len(assignment) > 0:
+            avg_distance = total_distance / len(assignment)
+            print(f"Average travel distance to targets: {avg_distance:.4f}")
+    
+    else:
+        raise ValueError(f"Unknown assignment method: {method}")
+    
+    return assignment
+
+
+def compute_forget_loss(embeddings, labels, target_assignment):
+    """Compute MSE loss pulling forget samples toward assigned targets"""
+    loss = torch.tensor(0.0, device=embeddings.device, requires_grad=True)
+    count = 0
+    
+    for class_id, target_vertex in target_assignment.items():
+        class_mask = labels == class_id
+        if class_mask.sum() > 0:
+            class_embeddings = embeddings[class_mask]
+            target_expanded = target_vertex.expand_as(class_embeddings).to(embeddings.device)
+            loss = loss + nn.MSELoss()(class_embeddings, target_expanded)
+            count += 1
+    
+    return loss / max(count, 1)
+
+
+def compute_retain_loss(embeddings, labels, retain_centroids, use_mse=True):
+    """Compute loss to anchor retain samples to their centroids"""
+    loss = torch.tensor(0.0, device=embeddings.device, requires_grad=True)
+    count = 0
+    
+    for class_id, centroid in retain_centroids.items():
+        class_mask = labels == class_id
+        if class_mask.sum() > 0:
+            class_embeddings = embeddings[class_mask]
+            
+            if use_mse:
+                centroid_expanded = centroid.expand_as(class_embeddings).to(embeddings.device)
+                loss = loss + nn.MSELoss()(class_embeddings, centroid_expanded)
+            else:
+                # Use cosine similarity loss
+                cos_sim = nn.CosineSimilarity(dim=1)
+                similarities = cos_sim(class_embeddings, centroid.expand_as(class_embeddings).to(embeddings.device))
+                loss = loss + (1 - similarities).mean()
+            
+            count += 1
+    
+    return loss / max(count, 1)
+
+
+def compute_classification_loss(model, imgs, labels, retain_classes, temperature=3.0):
+    """Compute classification loss for forget samples with uniform target distribution"""
+    # Get model predictions
+    logits = model(imgs)
+    
+    # Apply temperature scaling for sharper gradients
+    logits = logits / temperature
+    
+    # Create uniform target distribution over retain classes only
+    batch_size = logits.size(0)
+    num_retain = len(retain_classes)
+    uniform_targets = torch.zeros_like(logits)
+    
+    # Set equal probability for retain classes
+    for class_id in retain_classes:
+        uniform_targets[:, class_id] = 1.0 / num_retain
+    
+    # Use KL divergence loss to push toward uniform distribution
+    log_probs = torch.log_softmax(logits, dim=1)
+    loss = nn.KLDivLoss(reduction='batchmean')(log_probs, uniform_targets)
+    
+    return loss
