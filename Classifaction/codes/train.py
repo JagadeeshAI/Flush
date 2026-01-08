@@ -6,7 +6,7 @@ from utils import get_model
 
 # ---------------- CONFIG ----------------
 DATA_DIR = "/media/jag/volD2/cifer100/cifer"
-EPOCHS = 10
+EPOCHS = 50
 BATCH_SIZE = 64
 LR = 3e-4
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -55,7 +55,7 @@ def main():
         DATA_DIR, BATCH_SIZE
     )
 
-    model = get_model(num_classes, model_path=None, device=DEVICE)
+    model = get_model(num_classes, model_path="checkpoints/best.pth", device=DEVICE)
 
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
@@ -80,7 +80,7 @@ def main():
                 "model_state": model.state_dict(),
                 "optimizer_state": optimizer.state_dict(),
             },
-            f"checkpoint_epoch_{epoch}.pth"
+            f"checkpoints/best.pth"
         )
 
 

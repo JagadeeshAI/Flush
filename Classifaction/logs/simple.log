@@ -1,65 +1,12 @@
-(back) jag@jag:/media/jag/volD2/Flush/Classifaction$ python ./method/VU.py
 === Voronoi Unlearning (SIMPLE) ===
 Method: simple
-Epochs: 10
-Batch size: 64
+Epochs: 3
+Batch size: 32
 Learning rate: 0.0001
+Use regularization: True
+Lambda regularization: 0.01
 Loading model from checkpoint: checkpoints/best.pth
 Total parameters: 5,691,172
 Trainable parameters: 147,456
 Trainable percentage: 2.59%
 Extracting embeddings...
-Computing retain class centroids...
-Computing Voronoi vertices for 50 retain classes...
-Computing true Voronoi vertices for 50 centroids...
-Computing Voronoi vertices: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 50/50 [00:00<00:00, 5270.55it/s]
-Generated 50 Voronoi vertices
-Selecting 50 target vertices...
-Assigning targets to forget classes using 'simple' method...
-Setup complete: 50 targets assigned
-
-=== Initial Evaluation ===
-Forget Acc: 65.81% | Retain Acc: 66.03%
-
-=== Starting Voronoi Unlearning for 10 epochs ===
-Forget loader batches: 333, Retain loader batches: 33
-Epoch 1/10: 100%|████████████████████████████████████████████████████████████████████████████████████████████| 33/33 [00:14<00:00,  2.27it/s, Forget=11.0200, R_MSE=1.0445, R_CE=1.0824]
-Epoch 1: Forget: 11.0200, Retain MSE: 1.0445, Retain CE: 1.0824
-         Forget Acc: 49.15% | Retain Acc: 66.05%
-Forget loader batches: 333, Retain loader batches: 33
-Epoch 2/10: 100%|█████████████████████████████████████████████████████████████████████████████████████████████| 33/33 [00:11<00:00,  2.97it/s, Forget=7.3704, R_MSE=0.8204, R_CE=1.2304]
-Epoch 2: Forget: 7.3704, Retain MSE: 0.8204, Retain CE: 1.2304
-         Forget Acc: 43.07% | Retain Acc: 67.07%
-Forget loader batches: 333, Retain loader batches: 33
-Epoch 3/10: 100%|█████████████████████████████████████████████████████████████████████████████████████████████| 33/33 [00:14<00:00,  2.31it/s, Forget=4.1609, R_MSE=0.6771, R_CE=1.4876]
-Epoch 3: Forget: 4.1609, Retain MSE: 0.6771, Retain CE: 1.4876
-         Forget Acc: 36.24% | Retain Acc: 66.64%
-Forget loader batches: 333, Retain loader batches: 33
-Epoch 4/10: 100%|█████████████████████████████████████████████████████████████████████████████████████████████| 33/33 [00:15<00:00,  2.17it/s, Forget=3.2861, R_MSE=0.6726, R_CE=1.5685]
-Epoch 4: Forget: 3.2861, Retain MSE: 0.6726, Retain CE: 1.5685
-         Forget Acc: 31.97% | Retain Acc: 65.89%
-Forget loader batches: 333, Retain loader batches: 33
-Epoch 5/10: 100%|█████████████████████████████████████████████████████████████████████████████████████████████| 33/33 [00:17<00:00,  1.93it/s, Forget=2.9640, R_MSE=0.6647, R_CE=1.5820]
-Epoch 5: Forget: 2.9640, Retain MSE: 0.6647, Retain CE: 1.5820
-         Forget Acc: 27.44% | Retain Acc: 65.76%
-Forget loader batches: 333, Retain loader batches: 33
-Epoch 6/10: 100%|█████████████████████████████████████████████████████████████████████████████████████████████| 33/33 [00:18<00:00,  1.83it/s, Forget=2.7811, R_MSE=0.6819, R_CE=1.6041]
-Epoch 6: Forget: 2.7811, Retain MSE: 0.6819, Retain CE: 1.6041
-         Forget Acc: 24.00% | Retain Acc: 65.36%
-Forget loader batches: 333, Retain loader batches: 33
-Epoch 7/10: 100%|█████████████████████████████████████████████████████████████████████████████████████████████| 33/33 [00:19<00:00,  1.71it/s, Forget=2.6735, R_MSE=0.6750, R_CE=1.5913]
-Epoch 7: Forget: 2.6735, Retain MSE: 0.6750, Retain CE: 1.5913
-         Forget Acc: 21.63% | Retain Acc: 65.63%
-Forget loader batches: 333, Retain loader batches: 33
-Epoch 8/10: 100%|█████████████████████████████████████████████████████████████████████████████████████████████| 33/33 [00:18<00:00,  1.75it/s, Forget=2.6356, R_MSE=0.6729, R_CE=1.5796]
-Epoch 8: Forget: 2.6356, Retain MSE: 0.6729, Retain CE: 1.5796
-         Forget Acc: 19.17% | Retain Acc: 66.13%
-Forget loader batches: 333, Retain loader batches: 33
-Epoch 9/10: 100%|█████████████████████████████████████████████████████████████████████████████████████████████| 33/33 [00:19<00:00,  1.69it/s, Forget=2.6012, R_MSE=0.6644, R_CE=1.5602]
-Epoch 9: Forget: 2.6012, Retain MSE: 0.6644, Retain CE: 1.5602
-         Forget Acc: 17.84% | Retain Acc: 66.56%
-Forget loader batches: 333, Retain loader batches: 33
-Epoch 10/10: 100%|████████████████████████████████████████████████████████████████████████████████████████████| 33/33 [00:20<00:00,  1.64it/s, Forget=2.5510, R_MSE=0.6754, R_CE=1.5633]
-Epoch 10: Forget: 2.5510, Retain MSE: 0.6754, Retain CE: 1.5633
-         Forget Acc: 15.60% | Retain Acc: 66.27%
-Voronoi Unlearning completed! Model saved to 'voronoi_unlearned_simple.pth'

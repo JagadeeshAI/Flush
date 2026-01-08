@@ -10,17 +10,19 @@ from codes.utils import get_model
 from method.utils import (
     extract_embeddings, extract_features, compute_class_centroids, compute_voronoi_vertices,
     select_target_vertices, assign_targets_to_classes, compute_forget_loss, compute_retain_loss,
-    compute_classification_loss
+    compute_classification_loss, compute_group_sparse_regularization
 )
 from tqdm import tqdm
 
 
 class VoronoiUnlearning:
-    def __init__(self, model_path, forget_classes, retain_classes, device="cuda", method="simple"):
+    def __init__(self, model_path, forget_classes, retain_classes, device="cuda", method="simple", use_regularization=False, lambda_reg=1e-3):
         self.device = device
         self.forget_classes = forget_classes
         self.retain_classes = retain_classes
         self.method = method
+        self.use_regularization = use_regularization
+        self.lambda_reg = lambda_reg
         
         # Load model
         num_classes = len(forget_classes) + len(retain_classes)
@@ -41,10 +43,9 @@ class VoronoiUnlearning:
         print("Computing retain class centroids...")
         self.retain_centroids = compute_class_centroids(embeddings, labels, self.retain_classes)
         
-        # For advance method, also compute forget centroids
-        if self.method == "advance":
-            print("Computing forget class centroids for adaptive assignment...")
-            self.forget_centroids = compute_class_centroids(embeddings, labels, self.forget_classes)
+        # Compute forget centroids for both methods (needed for travel distance calculation)
+        print("Computing forget class centroids...")
+        self.forget_centroids = compute_class_centroids(embeddings, labels, self.forget_classes)
         
         # Clear embeddings to free memory
         del embeddings, labels
@@ -72,7 +73,7 @@ class VoronoiUnlearning:
         del target_vertices
         gc.collect()
     
-    def unlearning_step_forget(self, batch, optimizer):
+    def unlearning_step_forget(self, batch, optimizer, global_step):
         """Process forget batch and return loss"""
         imgs, labels = batch
         imgs, labels = imgs.to(self.device), labels.to(self.device)
@@ -81,13 +82,20 @@ class VoronoiUnlearning:
         embeddings = extract_features(self.model, imgs)
         
         # L_forget = Σ MSE(embedding(x_forget), assigned_vertex)
-        loss_forget = compute_forget_loss(embeddings, labels, self.target_assignment)*5
+        loss_forget = compute_forget_loss(embeddings, labels, self.target_assignment)
         
-        loss_components = {'forget': loss_forget.item()}
+        # Add group sparse regularization if enabled and after 1000 steps
+        if self.use_regularization and global_step > 1000:
+            reg_loss = compute_group_sparse_regularization(self.model, self.lambda_reg)
+            total_loss = loss_forget + reg_loss
+            loss_components = {'forget': loss_forget.item(), 'reg': reg_loss.item()}
+        else:
+            total_loss = loss_forget
+            loss_components = {'forget': loss_forget.item()}
         
-        return loss_forget, loss_components
+        return total_loss, loss_components
     
-    def unlearning_step_retain(self, batch, optimizer):
+    def unlearning_step_retain(self, batch, optimizer, global_step):
         """Process retain batch and return loss"""
         imgs, labels = batch
         imgs, labels = imgs.to(self.device), labels.to(self.device)
@@ -104,12 +112,22 @@ class VoronoiUnlearning:
         loss_retain_ce = nn.CrossEntropyLoss()(logits, labels)
         
         # Total retain loss
-        loss_retain_total = loss_retain_mse + loss_retain_ce
+        loss_retain_total = loss_retain_mse + loss_retain_ce*0.1
         
-        loss_components = {
-            'retain_mse': loss_retain_mse.item(),
-            'retain_ce': loss_retain_ce.item()
-        }
+        # Add group sparse regularization if enabled and after 1000 steps
+        if self.use_regularization and global_step > 1000:
+            reg_loss = compute_group_sparse_regularization(self.model, self.lambda_reg)
+            loss_retain_total = loss_retain_total + reg_loss
+            loss_components = {
+                'retain_mse': loss_retain_mse.item(),
+                'retain_ce': loss_retain_ce.item(),
+                'reg': reg_loss.item()
+            }
+        else:
+            loss_components = {
+                'retain_mse': loss_retain_mse.item(),
+                'retain_ce': loss_retain_ce.item()
+            }
         
         return loss_retain_total, loss_components
     
@@ -125,16 +143,12 @@ class VoronoiUnlearning:
             data_dir, batch_size, class_range=(50, 99), data_ratio=0.1
         )
         
-        # For advance method, we need both forget and retain data to compute centroids
-        if self.method == "advance":
-            # Get combined loader for computing both forget and retain centroids
-            combined_val_loader, _, _ = get_dataloaders(
-                data_dir, batch_size, class_range=(0, 99), data_ratio=0.1
-            )
-            self.setup_targets(combined_val_loader)
-        else:
-            # For simple method, only need retain centroids
-            self.setup_targets(retain_val_loader)
+        # Both methods need forget and retain data to compute centroids and travel distance
+        # Get combined loader for computing both forget and retain centroids
+        combined_val_loader, _, _ = get_dataloaders(
+            data_dir, batch_size, class_range=(0, 99), data_ratio=0.1
+        )
+        self.setup_targets(combined_val_loader)
         
         # Initial evaluation before unlearning
         print("\n=== Initial Evaluation ===")
@@ -144,82 +158,108 @@ class VoronoiUnlearning:
         # Setup optimizer
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr)
         
-        print(f"\n=== Starting Voronoi Unlearning for {epochs} epochs ===")
+        # Create iterators for alternating batches
+        forget_iter = iter(forget_train_loader)
+        retain_iter = iter(retain_train_loader)
         
-        for epoch in range(epochs):
+        # Calculate total steps based on both loaders
+        max_steps = max(len(forget_train_loader), len(retain_train_loader)) * epochs
+        
+        print(f"\n=== Starting Step-based Voronoi Unlearning for {max_steps} steps ===")
+        print(f"Forget loader batches: {len(forget_train_loader)}, Retain loader batches: {len(retain_train_loader)}")
+        print(f"Validation every 100 steps")
+        
+        step_losses = {'forget': 0.0, 'retain_mse': 0.0, 'retain_ce': 0.0, 'reg': 0.0, 'count': 0}
+        global_step = 0
+        
+        # Step-based training loop
+        pbar = tqdm(range(max_steps), desc="Training Steps")
+        reg_started = False
+        
+        for _ in pbar:
             self.model.train()
-            epoch_losses = {'forget': 0.0, 'retain_mse': 0.0, 'retain_ce': 0.0, 'count': 0}
+            global_step += 1
             
-            # Debug: Check loader sizes
-            print(f"Forget loader batches: {len(forget_train_loader)}, Retain loader batches: {len(retain_train_loader)}")
+            # Print message when regularization starts
+            if self.use_regularization and global_step == 501 and not reg_started:
+                print(f"\n🚀 Regularization activated at step {global_step}!")
+                reg_started = True
             
-            # Create iterators for alternating batches
-            forget_iter = iter(forget_train_loader)
-            retain_iter = iter(retain_train_loader)
+            # Process one forget batch
+            try:
+                forget_batch = next(forget_iter)
+            except StopIteration:
+                # Reset forget iterator when exhausted
+                forget_iter = iter(forget_train_loader)
+                forget_batch = next(forget_iter)
             
-            # Calculate total steps (use minimum of both loaders)
-            total_steps = min(len(forget_train_loader), len(retain_train_loader))
+            loss_forget, loss_components = self.unlearning_step_forget(forget_batch, optimizer, global_step)
             
-            # Alternate between forget and retain batches
-            pbar = tqdm(range(total_steps), desc=f"Epoch {epoch+1}/{epochs}")
-            for step in pbar:
-                # Process one forget batch
-                try:
-                    forget_batch = next(forget_iter)
-                    loss_forget, loss_components = self.unlearning_step_forget(forget_batch, optimizer)
-                    
-                    # Backprop for forget loss
-                    optimizer.zero_grad()
-                    loss_forget.backward()
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=5.0)  # Add this
-                    optimizer.step()
-                    
-                    for key, value in loss_components.items():
-                        epoch_losses[key] = epoch_losses.get(key, 0.0) + value
-                    epoch_losses['count'] += 1
-                except StopIteration:
-                    break
+            # Backprop for forget loss
+            optimizer.zero_grad()
+            loss_forget.backward()
+            optimizer.step()
+            
+            for key, value in loss_components.items():
+                step_losses[key] = step_losses.get(key, 0.0) + value
+            step_losses['count'] += 1
+            
+            # Process one retain batch
+            try:
+                retain_batch = next(retain_iter)
+            except StopIteration:
+                # Reset retain iterator when exhausted
+                retain_iter = iter(retain_train_loader)
+                retain_batch = next(retain_iter)
+            
+            loss_retain, loss_components = self.unlearning_step_retain(retain_batch, optimizer, global_step)
+            
+            # Backprop for retain loss
+            optimizer.zero_grad()
+            loss_retain.backward()
+            optimizer.step()
+            
+            for key, value in loss_components.items():
+                step_losses[key] = step_losses.get(key, 0.0) + value
+            step_losses['count'] += 1
+            
+            # Update progress bar with current losses
+            if step_losses['count'] > 0:
+                avg_forget = step_losses['forget'] / step_losses['count']
+                avg_retain_mse = step_losses['retain_mse'] / step_losses['count']
+                avg_retain_ce = step_losses['retain_ce'] / step_losses['count']
                 
-                # Process one retain batch
-                try:
-                    retain_batch = next(retain_iter)
-                    loss_retain, loss_components = self.unlearning_step_retain(retain_batch, optimizer)
-                    
-                    # Backprop for retain loss
-                    optimizer.zero_grad()
-                    loss_retain.backward()
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=5.0)  # Add this
-                    optimizer.step()
-                    
-                    for key, value in loss_components.items():
-                        epoch_losses[key] = epoch_losses.get(key, 0.0) + value
-                    epoch_losses['count'] += 1
-                except StopIteration:
-                    break
+                postfix = {
+                    'Step': f"{global_step}",
+                    'Forget': f"{avg_forget:.4f}", 
+                    'R_MSE': f"{avg_retain_mse:.4f}",
+                    'R_CE': f"{avg_retain_ce:.4f}"
+                }
                 
-                # Update progress bar with current losses
-                if epoch_losses['count'] > 0:
-                    avg_forget = epoch_losses['forget'] / epoch_losses['count']
-                    avg_retain_mse = epoch_losses['retain_mse'] / epoch_losses['count']
-                    avg_retain_ce = epoch_losses['retain_ce'] / epoch_losses['count']
-                    pbar.set_postfix({
-                        'Forget': f"{avg_forget:.4f}", 
-                        'R_MSE': f"{avg_retain_mse:.4f}",
-                        'R_CE': f"{avg_retain_ce:.4f}"
-                    })
+                if self.use_regularization and step_losses['reg'] > 0:
+                    avg_reg = step_losses['reg'] / step_losses['count']
+                    postfix['Reg'] = f"{avg_reg:.4f}"
+                
+                pbar.set_postfix(postfix)
             
-            # Print epoch summary
-            if epoch_losses['count'] > 0:
-                avg_forget = epoch_losses.get('forget', 0.0) / epoch_losses['count']
-                avg_retain_mse = epoch_losses.get('retain_mse', 0.0) / epoch_losses['count']
-                avg_retain_ce = epoch_losses.get('retain_ce', 0.0) / epoch_losses['count']
-                print(f"Epoch {epoch+1}: Forget: {avg_forget:.4f}, Retain MSE: {avg_retain_mse:.4f}, Retain CE: {avg_retain_ce:.4f}")
-            
-            # Evaluate after each epoch with memory optimization
-            torch.cuda.empty_cache() if torch.cuda.is_available() else None
-            forget_acc, retain_acc = evaluate_on_ranges(self.model, data_dir, self.forget_classes, self.retain_classes, batch_size//2, self.device)
-            print(f"         Forget Acc: {forget_acc:.2f}% | Retain Acc: {retain_acc:.2f}%")
-            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+            # Validate every 100 steps
+            if global_step % 100 == 0:
+                # Print step summary
+                print(f"\n--- Step {global_step} Summary ---")
+                if self.use_regularization and step_losses['reg'] > 0:
+                    avg_reg = step_losses['reg'] / step_losses['count']
+                    print(f"Forget Loss: {avg_forget:.4f}, Retain MSE: {avg_retain_mse:.4f}, Retain CE: {avg_retain_ce:.4f}, Reg Loss: {avg_reg:.4f}")
+                else:
+                    print(f"Forget Loss: {avg_forget:.4f}, Retain MSE: {avg_retain_mse:.4f}, Retain CE: {avg_retain_ce:.4f}")
+                
+                # Evaluate model performance
+                torch.cuda.empty_cache() if torch.cuda.is_available() else None
+                forget_acc, retain_acc = evaluate_on_ranges(self.model, data_dir, self.forget_classes, self.retain_classes, batch_size//2, self.device)
+                print(f"Step {global_step} Accuracy - Forget: {forget_acc:.2f}% | Retain: {retain_acc:.2f}%")
+                torch.cuda.empty_cache() if torch.cuda.is_available() else None
+                
+                # Reset step losses for next 100 steps
+                step_losses = {'forget': 0.0, 'retain_mse': 0.0, 'retain_ce': 0.0, 'reg': 0.0, 'count': 0}
         
         return self.model
 
@@ -274,12 +314,16 @@ def main():
     parser = argparse.ArgumentParser(description='Voronoi Unlearning Methods')
     parser.add_argument('--method', type=str, choices=['simple', 'advance'], default='simple',
                        help='Assignment method: simple (random) or advance (nearest)')
-    parser.add_argument('--epochs', type=int, default=10,
+    parser.add_argument('--epochs', type=int, default=20,
                        help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, default=64,
                        help='Batch size for training')
     parser.add_argument('--lr', type=float, default=1e-4,
                        help='Learning rate')
+    parser.add_argument('--use-reg', type=str, choices=['yes', 'no'], default='no',
+                       help='Use group sparse regularization (default: no)')
+    parser.add_argument('--lambda-reg', type=float, default=0.01,
+                       help='Regularization lambda weight (default: 1e-3)')
     
     args = parser.parse_args()
     
@@ -292,14 +336,21 @@ def main():
     forget_classes = list(range(0, 50))   # Classes 0-49
     retain_classes = list(range(50, 100)) # Classes 50-99
     
+    use_reg = args.use_reg == 'yes'
+    
     print(f"=== Voronoi Unlearning ({args.method.upper()}) ===")
     print(f"Method: {args.method}")
     print(f"Epochs: {args.epochs}")
     print(f"Batch size: {args.batch_size}")
     print(f"Learning rate: {args.lr}")
+    print(f"Use regularization: {use_reg}")
+    if use_reg:
+        print(f"Lambda regularization: {args.lambda_reg}")
+        print(f"Note: Regularization will start after step 1000")
     
     # Create Voronoi Unlearning instance with selected method
-    vu = VoronoiUnlearning(MODEL_PATH, forget_classes, retain_classes, DEVICE, method=args.method)
+    vu = VoronoiUnlearning(MODEL_PATH, forget_classes, retain_classes, DEVICE, 
+                          method=args.method, use_regularization=use_reg, lambda_reg=args.lambda_reg)
     
     # Run unlearning
     unlearned_model = vu.unlearn(

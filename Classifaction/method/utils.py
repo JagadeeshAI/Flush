@@ -302,10 +302,29 @@ def assign_targets_to_classes(target_vertices, forget_classes, forget_centroids=
     
     if method == "simple":
         # Random assignment (original method)
+        print("Using random target assignment...")
+        
         shuffled_targets = target_vertices[torch.randperm(len(target_vertices))]
+        total_distance = 0.0
+        valid_distances = 0
+        
         for i, class_id in enumerate(forget_classes):
             target_idx = i % len(shuffled_targets)
             assignment[class_id] = shuffled_targets[target_idx]
+            
+            # Calculate travel distance if forget centroids available
+            if forget_centroids is not None and class_id in forget_centroids:
+                forget_centroid = forget_centroids[class_id]
+                distance = torch.norm(shuffled_targets[target_idx] - forget_centroid).item()
+                total_distance += distance
+                valid_distances += 1
+        
+        # Report average travel distance
+        if forget_centroids is not None and valid_distances > 0:
+            avg_distance = total_distance / valid_distances
+            print(f"Average travel distance to targets: {avg_distance:.4f}")
+        else:
+            print("Average travel distance: Not calculated (no forget centroids available)")
     
     elif method == "advance":
         # Nearest target assignment (adaptive method)
@@ -403,3 +422,46 @@ def compute_classification_loss(model, imgs, labels, retain_classes, temperature
     loss = nn.KLDivLoss(reduction='batchmean')(log_probs, uniform_targets)
     
     return loss
+
+
+def compute_group_sparse_regularization(model, lambda_reg=1e-3):
+    """Compute group sparse regularization loss for LoRA parameters
+    
+    For each Transformer block (group g):
+    1. Collect all LoRA parameters in that block's attention: {A_q, B_q, A_k, B_k, A_v, B_v}
+    2. Compute group L2 norm: ||θ_g||₂ = sqrt(sum of all squared parameters)
+    
+    Regularization loss: L_group_sparse = λ * Σ_{all groups} ||θ_g||₂
+    """
+    if not hasattr(model, 'base_model'):
+        return torch.tensor(0.0, device=next(model.parameters()).device)
+    
+    total_reg_loss = 0.0
+    device = next(model.parameters()).device
+    
+    # Access LoRA model
+    lora_model = model.base_model if hasattr(model, 'base_model') else model
+    
+    # Iterate through Transformer blocks
+    for block_idx, (name, module) in enumerate(lora_model.named_modules()):
+        if 'blocks' in name and 'attn.qkv' in name:
+            # This is an attention module in a transformer block
+            group_params = []
+            
+            # Collect LoRA A and B parameters for this attention block
+            for param_name, param in module.named_parameters():
+                if 'lora_' in param_name and ('A' in param_name or 'B' in param_name):
+                    group_params.append(param.view(-1))  # Flatten parameter
+            
+            # Compute group L2 norm if we found LoRA parameters
+            if group_params:
+                # Concatenate all parameters in this group
+                group_tensor = torch.cat(group_params)
+                # Compute L2 norm
+                group_norm = torch.norm(group_tensor, p=2)
+                total_reg_loss += group_norm
+    
+    # Apply lambda regularization weight
+    reg_loss = lambda_reg * total_reg_loss
+    
+    return reg_loss
