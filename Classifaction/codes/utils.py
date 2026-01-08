@@ -53,6 +53,21 @@ def get_model(num_classes, model_path=None, device="cpu"):
         
         model = get_peft_model(model, lora_config)
     
+    # Make classifier head trainable
+    if hasattr(model, 'base_model'):
+        # For LoRA wrapped model
+        if hasattr(model.base_model, 'head'):
+            for param in model.base_model.head.parameters():
+                param.requires_grad = True
+        elif hasattr(model.base_model, 'model') and hasattr(model.base_model.model, 'head'):
+            for param in model.base_model.model.head.parameters():
+                param.requires_grad = True
+    else:
+        # For regular model
+        if hasattr(model, 'head'):
+            for param in model.head.parameters():
+                param.requires_grad = True
+    
     total_params, trainable_params = count_parameters(model)
     trainable_percentage = (trainable_params / total_params) * 100
     

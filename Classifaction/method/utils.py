@@ -5,260 +5,123 @@ from itertools import combinations
 import random
 
 
-def extract_features(model, imgs):
-    """Extract features from penultimate layer for LoRA models"""
-    # For LoRA wrapped vision transformer
+def extract_classifier_weights(model, class_list):
+    """Extract classifier head weights for specified classes"""
+    weights = {}
+    
+    # Access the classifier head
     if hasattr(model, 'base_model'):
-        # Access the underlying vision transformer
-        vit = model.base_model.model if hasattr(model.base_model, 'model') else model.base_model
-        
-        # Forward through vision transformer layers (before head)
-        x = vit.patch_embed(imgs)
-        cls_token = vit.cls_token.expand(x.shape[0], -1, -1)
-        
-        # Check if dist_token exists (for DeiT models)
-        if hasattr(vit, 'dist_token') and vit.dist_token is not None:
-            x = torch.cat((cls_token, vit.dist_token.expand(x.shape[0], -1, -1), x), dim=1)
+        # For LoRA wrapped model
+        if hasattr(model.base_model, 'head'):
+            head_weight = model.base_model.head.weight  # Shape: [num_classes, embed_dim]
+        elif hasattr(model.base_model, 'model') and hasattr(model.base_model.model, 'head'):
+            head_weight = model.base_model.model.head.weight
         else:
-            x = torch.cat((cls_token, x), dim=1)
-            
-        x = vit.pos_drop(x + vit.pos_embed)
-        x = vit.blocks(x)
-        x = vit.norm(x)
-        features = x[:, 0]  # CLS token features
+            raise ValueError("Could not find classifier head in LoRA model")
     else:
         # For regular model
-        x = model.patch_embed(imgs)
-        cls_token = model.cls_token.expand(x.shape[0], -1, -1)
-        x = torch.cat((cls_token, x), dim=1)
-        x = model.pos_drop(x + model.pos_embed)
-        x = model.blocks(x)
-        x = model.norm(x)
-        features = x[:, 0]  # CLS token features
+        if hasattr(model, 'head'):
+            head_weight = model.head.weight
+        else:
+            raise ValueError("Could not find classifier head in model")
     
-    return features
-
-
-def extract_embeddings(model, dataloader, device):
-    """Extract embeddings from model's penultimate layer"""
-    import gc
-    model.eval()
-    embeddings = []
-    labels = []
-    
-    with torch.no_grad():
-        for i, (imgs, lbls) in enumerate(dataloader):
-            imgs = imgs.to(device)
-            
-            # Process in smaller chunks to reduce memory
-            chunk_size = min(16, imgs.size(0))
-            chunk_features = []
-            
-            for j in range(0, imgs.size(0), chunk_size):
-                chunk = imgs[j:j+chunk_size]
-                features = extract_features(model, chunk)
-                chunk_features.append(features.cpu())
-                del features, chunk
-                
-            # Combine chunks
-            batch_features = torch.cat(chunk_features, dim=0)
-            embeddings.append(batch_features)
-            labels.extend(lbls.tolist())
-            
-            # Clear memory every few batches
-            del imgs, lbls, chunk_features, batch_features
-            if i % 5 == 0:
-                torch.cuda.empty_cache() if torch.cuda.is_available() else None
-                gc.collect()
-    
-    result_embeddings = torch.cat(embeddings, dim=0)
-    del embeddings
-    gc.collect()
-    
-    return result_embeddings, torch.tensor(labels)
-
-
-def compute_class_centroids(embeddings, labels, class_list):
-    """Compute centroids for specified classes"""
-    centroids = {}
-    
+    # Extract weights for specified classes
     for class_id in class_list:
-        class_mask = labels == class_id
-        if class_mask.sum() > 0:
-            centroids[class_id] = embeddings[class_mask].mean(dim=0)
+        if class_id < head_weight.shape[0]:
+            weights[class_id] = head_weight[class_id].detach().clone()
     
-    return centroids
+    return weights
 
 
-def compute_true_voronoi_vertex(selected_centroids, max_iterations=100, tolerance=1e-6):
-    """Compute true Voronoi vertex equidistant from selected centroids using iterative optimization"""
-    k, dim = selected_centroids.shape
-    
-    if k < 2:
-        return None
-    
-    # Initialize at mean of centroids
-    vertex = selected_centroids.mean(dim=0)
-    
-    for iteration in range(max_iterations):
-        # Compute distances to all selected centroids
-        distances = torch.norm(selected_centroids - vertex.unsqueeze(0), dim=1)
-        
-        # Check if already equidistant (within tolerance)
-        if torch.std(distances) < tolerance:
-            break
-        
-        # Gradient descent to minimize distance variance
-        # Compute gradient of distance variance with respect to vertex
-        mean_dist = distances.mean()
-        grad = torch.zeros_like(vertex)
-        
-        for i in range(k):
-            diff = vertex - selected_centroids[i]
-            dist = distances[i]
-            if dist > 0:
-                grad += 2 * (dist - mean_dist) * diff / dist
-        
-        # Update vertex position
-        lr = 0.01
-        vertex = vertex - lr * grad
-    
-    # Verify final equidistance quality
-    final_distances = torch.norm(selected_centroids - vertex.unsqueeze(0), dim=1)
-    variance = torch.var(final_distances)
-    
-    # Only return if reasonably equidistant
-    if variance < tolerance * 10:
-        return vertex
-    else:
-        return None
-
-
-def compute_circumcenter_nd(three_centroids):
-    """Compute circumcenter-like point for 3 centroids in high-dimensional space"""
-    if three_centroids.shape[0] != 3:
-        return None
-    
-    # Use circumcenter formula adapted for high dimensions
-    a, b, c = three_centroids[0], three_centroids[1], three_centroids[2]
-    
-    # Vectors
-    ab = b - a
-    ac = c - a
-    
-    # Check if points are too close (nearly collinear)
-    if torch.norm(ab) < 1e-8 or torch.norm(ac) < 1e-8:
-        return (a + b + c) / 3  # Fallback to centroid
-    
-    # Use generalized circumcenter formula for n-dimensional space
-    # Find point equidistant from all three points
-    ab_norm_sq = torch.norm(ab) ** 2
-    ac_norm_sq = torch.norm(ac) ** 2
-    ab_dot_ac = torch.dot(ab, ac)
-    
-    # Determinant check for non-collinear points
-    det = ab_norm_sq * ac_norm_sq - ab_dot_ac ** 2
-    if abs(det) < 1e-8:
-        return (a + b + c) / 3  # Fallback to centroid
-    
-    # Solve for coefficients that make point equidistant from a, b, c
-    # This is a simplified approach that works in high dimensions
-    alpha = (ac_norm_sq - ab_dot_ac) / det
-    beta = (ab_norm_sq - ab_dot_ac) / det
-    
-    # Compute circumcenter
-    circumcenter = a + alpha * ab + beta * ac
-    
-    # Verify equidistance quality
-    dist_a = torch.norm(circumcenter - a)
-    dist_b = torch.norm(circumcenter - b) 
-    dist_c = torch.norm(circumcenter - c)
-    
-    # If not reasonably equidistant, fall back to centroid
-    distances = torch.stack([dist_a, dist_b, dist_c])
-    if torch.std(distances) / torch.mean(distances) > 0.1:
-        return (a + b + c) / 3
-    
-    return circumcenter
-
-
-def compute_voronoi_vertices(centroids_dict, max_vertices=50):
-    """Compute true Voronoi vertices equidistant from multiple centroids"""
+def compute_voronoi_vertices_from_weights(weights_dict, max_vertices=50):
+    """Compute Voronoi vertices ensuring maximum spatial distribution"""
     import gc
     from tqdm import tqdm
     
-    centroids = torch.stack(list(centroids_dict.values()))
-    n_centroids = centroids.shape[0]
+    weights = torch.stack(list(weights_dict.values()))
+    n_weights = weights.shape[0]
     vertices = []
     degrees = []
     
-    print(f"Computing true Voronoi vertices for {n_centroids} centroids...")
+    print(f"Computing well-distributed Voronoi vertices from {n_weights} classifier head weights...")
     
-    # Start with k=3 and k=2 for stability in high dimensions
-    max_k = min(n_centroids, 3)  # Limit to k=3 for high-dimensional stability
+    # Strategy: Force targets to be in different regions by using distant weight pairs
+    weight_center = weights.mean(dim=0)
     
-    pbar = tqdm(desc="Computing Voronoi vertices", total=max_vertices)
+    # Create target regions in different directions from center
+    num_targets_needed = min(max_vertices, 50)  # Cap at reasonable number
     
-    for k in [3, 2]:  # Prioritize k=3, then k=2
-        if len(vertices) >= max_vertices or k > n_centroids:
-            break
+    pbar = tqdm(desc="Computing spatially distributed vertices", total=num_targets_needed)
+    
+    # Strategy: Create targets at different distances and directions from center
+    for target_idx in range(num_targets_needed):
+        if target_idx < 3:
+            # Simple approach: use farthest apart weight pairs for first 3 targets
+            weight_distances = torch.cdist(weights, weights, p=2)
             
-        # Sample combinations to avoid exponential explosion
-        all_combinations = list(combinations(range(n_centroids), k))
-        max_combinations = min(len(all_combinations), 100)  # Further reduced
-        sampled_combinations = random.sample(all_combinations, max_combinations) if len(all_combinations) > max_combinations else all_combinations
+            if target_idx == 0:
+                # Find the pair with maximum distance
+                max_dist_idx = torch.argmax(weight_distances)
+                i, j = divmod(max_dist_idx.item(), n_weights)
+            elif target_idx == 1:
+                # Find second most distant pair
+                flat_distances = weight_distances.flatten()
+                sorted_indices = torch.argsort(flat_distances, descending=True)
+                # Skip the maximum (which is at index 0) and find the next unique pair
+                for idx in sorted_indices[1:]:
+                    i, j = divmod(idx.item(), n_weights)
+                    if i != j:  # Make sure it's not diagonal
+                        break
+            else:  # target_idx == 2
+                # Find third most distant pair
+                flat_distances = weight_distances.flatten()
+                sorted_indices = torch.argsort(flat_distances, descending=True)
+                # Skip first few and find another unique pair
+                for idx in sorted_indices[n_weights:]:
+                    i, j = divmod(idx.item(), n_weights)
+                    if i != j:
+                        break
+            
+            # Create target as midpoint with offset
+            midpoint = (weights[i] + weights[j]) / 2
+            
+            # Add random offset to separate targets further
+            offset_direction = torch.randn_like(midpoint)
+            offset_direction = offset_direction / (torch.norm(offset_direction) + 1e-8)
+            offset_scale = torch.norm(weights[i] - weights[j]) * 0.2
+            vertex = midpoint + offset_scale * offset_direction
+                
+        else:
+            # For additional targets beyond the first 3, use simpler random generation
+            # Generate target around the weight center with random offset
+            offset_direction = torch.randn_like(weight_center)
+            offset_direction = offset_direction / (torch.norm(offset_direction) + 1e-8)
+            
+            # Use a moderate offset scale based on weight distribution
+            weight_std = torch.norm(weights - weight_center.unsqueeze(0), dim=1).std()
+            offset_scale = weight_std * (0.5 + torch.rand(1).item())  # Random scale
+            vertex = weight_center + offset_scale * offset_direction
         
-        for combo in sampled_combinations:
-            if len(vertices) >= max_vertices:
-                break
-            
-            selected_centroids = centroids[list(combo)]
-            
-            # Compute Voronoi vertex
-            if k == 3:
-                vertex = compute_circumcenter_nd(selected_centroids)
-            elif k == 2:
-                # For k=2, midpoint is the true Voronoi vertex
-                vertex = selected_centroids.mean(dim=0)
-            else:
-                vertex = compute_true_voronoi_vertex(selected_centroids)
-            
-            if vertex is not None:
-                # Simple validation: check if vertex is reasonable
-                all_distances = torch.norm(centroids - vertex.unsqueeze(0), dim=1)
-                
-                # Check if the k selected centroids are among the nearest
-                sorted_indices = torch.argsort(all_distances)
-                k_nearest = sorted_indices[:min(k+1, len(sorted_indices))]  # Allow some tolerance
-                
-                if len(set(combo).intersection(set(k_nearest.tolist()))) >= k-1:  # At least k-1 should be close
-                    vertices.append(vertex)
-                    degrees.append(k)
-                    pbar.update(1)
+        vertices.append(vertex)
+        degrees.append(2)
+        pbar.update(1)
     
     pbar.close()
     
-    # Always add some high-quality midpoints if we need more
-    if len(vertices) < max_vertices:
-        print("Adding additional midpoints...")
-        remaining = max_vertices - len(vertices)
-        pairs = list(combinations(range(n_centroids), 2))
-        random.shuffle(pairs)
-        
-        for i, j in pairs[:remaining]:
-            midpoint = (centroids[i] + centroids[j]) / 2
-            vertices.append(midpoint)
-            degrees.append(2)
+    # Verify targets are well-separated
+    if len(vertices) > 1:
+        target_tensor = torch.stack(vertices)
+        target_distances = torch.cdist(target_tensor, target_tensor, p=2)
+        # Zero out diagonal
+        target_distances.fill_diagonal_(float('inf'))
+        min_distance = target_distances.min().item()
+        print(f"Minimum distance between targets: {min_distance:.4f}")
     
-    del centroids
+    del weights
     gc.collect()
     
-    print(f"Generated {len(vertices)} Voronoi vertices")
+    print(f"Generated {len(vertices)} spatially distributed Voronoi vertices")
     return torch.stack(vertices) if vertices else None, degrees
-
-
-# Removed expensive solve_equidistant_point function
-# Now using fast geometric methods instead
 
 
 def select_target_vertices(vertices, degrees, n_targets):
@@ -287,35 +150,44 @@ def select_target_vertices(vertices, degrees, n_targets):
 
 
 def assign_targets_to_classes(target_vertices, forget_classes, forget_centroids=None, method="simple"):
-    """Assign target vertices to forget classes
-    
-    Args:
-        target_vertices: Voronoi vertices
-        forget_classes: List of forget class IDs
-        forget_centroids: Dict of forget class centroids (for adaptive method)
-        method: "simple" (random) or "advance" (nearest)
-    """
+    """Assign target vertices to forget classes with unique targets"""
     if target_vertices is None:
         return {}
     
     assignment = {}
     
     if method == "simple":
-        # Random assignment (original method)
-        print("Using random target assignment...")
+        # Random assignment ensuring unique targets per class
+        print("Using random target assignment with unique targets...")
+        
+        if len(target_vertices) < len(forget_classes):
+            print(f"Warning: Only {len(target_vertices)} targets available for {len(forget_classes)} forget classes")
         
         shuffled_targets = target_vertices[torch.randperm(len(target_vertices))]
         total_distance = 0.0
         valid_distances = 0
         
         for i, class_id in enumerate(forget_classes):
-            target_idx = i % len(shuffled_targets)
-            assignment[class_id] = shuffled_targets[target_idx]
+            if i < len(shuffled_targets):
+                # Assign unique target to each forget class
+                assignment[class_id] = shuffled_targets[i]
+            else:
+                # If more forget classes than targets, assign to a random target (but warn)
+                target_idx = torch.randint(0, len(shuffled_targets), (1,)).item()
+                assignment[class_id] = shuffled_targets[target_idx]
+                print(f"Warning: Reusing target for forget class {class_id}")
+            
+            assigned_target = assignment[class_id]
             
             # Calculate travel distance if forget centroids available
             if forget_centroids is not None and class_id in forget_centroids:
                 forget_centroid = forget_centroids[class_id]
-                distance = torch.norm(shuffled_targets[target_idx] - forget_centroid).item()
+                
+                # Ensure both tensors are on the same device
+                if assigned_target.device != forget_centroid.device:
+                    forget_centroid = forget_centroid.to(assigned_target.device)
+                
+                distance = torch.norm(assigned_target - forget_centroid).item()
                 total_distance += distance
                 valid_distances += 1
         
@@ -339,6 +211,10 @@ def assign_targets_to_classes(target_vertices, forget_classes, forget_centroids=
             if class_id in forget_centroids:
                 forget_centroid = forget_centroids[class_id]
                 
+                # Ensure both tensors are on the same device
+                if target_vertices.device != forget_centroid.device:
+                    forget_centroid = forget_centroid.to(target_vertices.device)
+                
                 # Compute distances to all target vertices
                 distances = torch.norm(target_vertices - forget_centroid.unsqueeze(0), dim=1)
                 
@@ -360,8 +236,48 @@ def assign_targets_to_classes(target_vertices, forget_classes, forget_centroids=
     return assignment
 
 
+def orthogonalize_embeddings_to_weights(embeddings, weights):
+    """Orthogonalize embeddings to given weights using Gram-Schmidt process"""
+    # weights: [num_classes, embed_dim] or stacked weight vectors
+    # embeddings: [batch_size, embed_dim]
+    
+    if len(weights.shape) == 1:
+        weights = weights.unsqueeze(0)  # Make it [1, embed_dim]
+    
+    orthogonalized_embeddings = embeddings.clone()
+    
+    for weight_vector in weights:
+        # Normalize the weight vector
+        weight_norm = weight_vector / (torch.norm(weight_vector) + 1e-8)
+        
+        # Project embeddings onto weight vector
+        projection = torch.sum(orthogonalized_embeddings * weight_norm.unsqueeze(0), dim=1, keepdim=True) * weight_norm.unsqueeze(0)
+        
+        # Remove the projection (orthogonalize)
+        orthogonalized_embeddings = orthogonalized_embeddings - projection
+    
+    return orthogonalized_embeddings
+
+
+def compute_auxiliary_logit_constraint(logits, forget_classes, retain_classes, margin=2.0):
+    """Compute auxiliary logit constraint: max(retain_logits) > max(forget_logits) + margin"""
+    # Extract forget and retain logits
+    forget_logits = logits[:, forget_classes]  # Shape: [batch_size, num_forget_classes]
+    retain_logits = logits[:, retain_classes]  # Shape: [batch_size, num_retain_classes]
+    
+    # Get max logits
+    max_forget_logits, _ = forget_logits.max(dim=1)  # Shape: [batch_size]
+    max_retain_logits, _ = retain_logits.max(dim=1)  # Shape: [batch_size]
+    
+    # Compute constraint: we want max_retain > max_forget + margin
+    # Loss is 0 if constraint is satisfied, positive otherwise
+    constraint_violation = torch.relu(max_forget_logits + margin - max_retain_logits)
+    
+    return constraint_violation.mean()
+
+
 def compute_forget_loss(embeddings, labels, target_assignment):
-    """Compute MSE loss pulling forget samples toward assigned targets"""
+    """Compute MSE loss pulling forget samples toward pre-orthogonalized assigned targets"""
     loss = torch.tensor(0.0, device=embeddings.device, requires_grad=True)
     count = 0
     
@@ -400,50 +316,18 @@ def compute_retain_loss(embeddings, labels, retain_centroids, use_mse=True):
     return loss / max(count, 1)
 
 
-def compute_classification_loss(model, imgs, labels, retain_classes, temperature=3.0):
-    """Compute classification loss for forget samples with uniform target distribution"""
-    # Get model predictions
-    logits = model(imgs)
-    
-    # Apply temperature scaling for sharper gradients
-    logits = logits / temperature
-    
-    # Create uniform target distribution over retain classes only
-    batch_size = logits.size(0)
-    num_retain = len(retain_classes)
-    uniform_targets = torch.zeros_like(logits)
-    
-    # Set equal probability for retain classes
-    for class_id in retain_classes:
-        uniform_targets[:, class_id] = 1.0 / num_retain
-    
-    # Use KL divergence loss to push toward uniform distribution
-    log_probs = torch.log_softmax(logits, dim=1)
-    loss = nn.KLDivLoss(reduction='batchmean')(log_probs, uniform_targets)
-    
-    return loss
-
-
 def compute_group_sparse_regularization(model, lambda_reg=1e-3):
-    """Compute group sparse regularization loss for LoRA parameters
-    
-    For each Transformer block (group g):
-    1. Collect all LoRA parameters in that block's attention: {A_q, B_q, A_k, B_k, A_v, B_v}
-    2. Compute group L2 norm: ||θ_g||₂ = sqrt(sum of all squared parameters)
-    
-    Regularization loss: L_group_sparse = λ * Σ_{all groups} ||θ_g||₂
-    """
+    """Compute group sparse regularization loss for LoRA parameters"""
     if not hasattr(model, 'base_model'):
         return torch.tensor(0.0, device=next(model.parameters()).device)
     
     total_reg_loss = 0.0
-    device = next(model.parameters()).device
     
     # Access LoRA model
     lora_model = model.base_model if hasattr(model, 'base_model') else model
     
     # Iterate through Transformer blocks
-    for block_idx, (name, module) in enumerate(lora_model.named_modules()):
+    for name, module in lora_model.named_modules():
         if 'blocks' in name and 'attn.qkv' in name:
             # This is an attention module in a transformer block
             group_params = []
