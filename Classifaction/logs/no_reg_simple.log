@@ -2,7 +2,7 @@
 Method: simple
 Epochs: 3
 Batch size: 32
-Learning rate: 0.0009
+Learning rate: 0.0001
 Use regularization: False
 Loading model from checkpoint: checkpoints/best.pth
 Total parameters: 5,691,172
@@ -17,7 +17,7 @@ Generated 50 Voronoi vertices
 Selecting 50 target vertices...
 Assigning targets to forget classes using 'simple' method...
 Using random target assignment...
-Average travel distance to targets: 22.5919
+Average travel distance to targets: 22.7716
 Setup complete: 50 targets assigned
 
 === Initial Evaluation ===
@@ -29,20 +29,4 @@ Training ratio: 5:1 (forget:retain batches)
 Validation every 100 steps
 
 --- Step 100 Summary ---
-Forget Loss: 0.9739, Retain MSE: 0.3477, Retain CE: 0.7140
-Step 100 Accuracy - Forget: 8.35% | Retain: 28.69%
-
---- Step 200 Summary ---
-Forget Loss: 0.5968, Retain MSE: 0.2844, Retain CE: 0.6760
-Step 200 Accuracy - Forget: 16.67% | Retain: 58.03%
-
---- Step 300 Summary ---
-Forget Loss: 0.5633, Retain MSE: 0.2629, Retain CE: 0.6418
-Step 300 Accuracy - Forget: 11.09% | Retain: 58.51%
-
---- Step 400 Summary ---
-Forget Loss: 0.5437, Retain MSE: 0.2501, Retain CE: 0.6197
-Step 400 Accuracy - Forget: 8.32% | Retain: 56.93%
-
---- Step 500 Summary ---
-Forget Loss: 0.5227, Retain MSE: 0.2558, Retain CE: 0.6239
+Forget Loss: 3.3953, Retain MSE: 0.3473, Retain CE: 0.2927

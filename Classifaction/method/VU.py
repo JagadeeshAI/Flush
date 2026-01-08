@@ -71,6 +71,28 @@ class VoronoiUnlearning:
         del target_vertices
         gc.collect()
     
+    # def unlearning_step_forget(self, batch, optimizer, global_step):
+    #     """Process forget batch and return loss"""
+    #     imgs, labels = batch
+    #     imgs, labels = imgs.to(self.device), labels.to(self.device)
+        
+    #     # Get features from penultimate layer
+    #     embeddings = extract_features(self.model, imgs)
+        
+    #     # L_forget = Σ MSE(embedding(x_forget), assigned_vertex)
+    #     loss_forget = compute_forget_loss(embeddings, labels, self.target_assignment)*2
+        
+    #     # Add group sparse regularization if enabled and after 1000 steps
+    #     if self.use_regularization and global_step > 1000:
+    #         reg_loss = compute_group_sparse_regularization(self.model, self.lambda_reg)
+    #         total_loss = loss_forget + reg_loss
+    #         loss_components = {'forget': loss_forget.item(), 'reg': reg_loss.item()}
+    #     else:
+    #         total_loss = loss_forget
+    #         loss_components = {'forget': loss_forget.item()}
+        
+    #     return total_loss, loss_components
+
     def unlearning_step_forget(self, batch, optimizer, global_step):
         """Process forget batch and return loss"""
         imgs, labels = batch
@@ -79,17 +101,38 @@ class VoronoiUnlearning:
         # Get features from penultimate layer
         embeddings = extract_features(self.model, imgs)
         
-        # L_forget = Σ MSE(embedding(x_forget), assigned_vertex)
-        loss_forget = compute_forget_loss(embeddings, labels, self.target_assignment)*2
+        # L_voronoi = Σ MSE(embedding(x_forget), assigned_vertex)
+        loss_forget = compute_forget_loss(embeddings, labels, self.target_assignment) * 2
+        
+        # L_ortho = Σ (W · embedding)² - force embeddings orthogonal to all classifier weights
+        # Access classifier weights
+        if hasattr(self.model, 'head'):
+            classifier_weights = self.model.head.weight  # [num_classes, embed_dim]
+        elif hasattr(self.model, 'fc'):
+            classifier_weights = self.model.fc.weight
+        else:
+            # Fallback for LoRA wrapped models
+            if hasattr(self.model, 'base_model'):
+                base = self.model.base_model.model if hasattr(self.model.base_model, 'model') else self.model.base_model
+                classifier_weights = base.head.weight
+            else:
+                raise AttributeError("Cannot find classifier weights")
+        
+        # Compute orthogonalization loss
+        logits = embeddings @ classifier_weights.T  # [batch, num_classes]
+        loss_ortho = (logits ** 2).mean()
+        
+        # Combine losses
+        lambda_ortho = 5  # Weight for orthogonal loss
+        total_loss = loss_forget + lambda_ortho * loss_ortho
+        
+        loss_components = {'forget': loss_forget.item()}
         
         # Add group sparse regularization if enabled and after 1000 steps
         if self.use_regularization and global_step > 1000:
             reg_loss = compute_group_sparse_regularization(self.model, self.lambda_reg)
-            total_loss = loss_forget + reg_loss
-            loss_components = {'forget': loss_forget.item(), 'reg': reg_loss.item()}
-        else:
-            total_loss = loss_forget
-            loss_components = {'forget': loss_forget.item()}
+            total_loss = total_loss + reg_loss
+            loss_components['reg'] = reg_loss.item()
         
         return total_loss, loss_components
     

@@ -1,0 +1,54 @@
+=== Voronoi Unlearning (ADVANCE) ===
+Method: advance
+Epochs: 20
+Batch size: 64
+Learning rate: 0.0001
+Use regularization: False
+Min forget distance: 2.0 (2-round defense)
+Loading model from checkpoint: checkpoints/best.pth
+Total parameters: 5,691,172
+Trainable parameters: 147,456
+Trainable percentage: 2.59%
+Extracting embeddings...
+Computing retain class centroids...
+Computing forget class centroids...
+Generating safe border targets between retain classes...
+Finding 50 safe border targets between retain classes...
+2-round defense: ensuring min distance 2.00 from forget centroids
+Generated 50 safe border targets with 2-round forget defense
+Assigning targets to forget classes using 'advance' method...
+Using adaptive nearest target assignment...
+Average travel distance to targets: 20.2014
+Setup complete: 50 targets assigned
+
+=== Initial Evaluation ===
+Forget Acc: 73.79% | Retain Acc: 75.76%
+
+=== Starting Step-based Voronoi Unlearning for 6660 steps ===
+Forget loader batches: 333, Retain loader batches: 33
+Training ratio: 5:1 (forget:retain batches)
+Validation every 100 steps
+
+--- Step 100 Summary ---
+Forget Loss: 2.5151, Retain MSE: 0.8630, Retain CE: 1.0754
+Step 100 Accuracy - Forget: 31.57% | Retain: 72.53%
+
+--- Step 200 Summary ---
+Forget Loss: 0.9396, Retain MSE: 0.5891, Retain CE: 1.4646
+Step 200 Accuracy - Forget: 26.56% | Retain: 76.37%
+
+--- Step 300 Summary ---
+Forget Loss: 0.8654, Retain MSE: 0.5418, Retain CE: 1.3936
+Step 300 Accuracy - Forget: 21.73% | Retain: 77.09%
+
+--- Step 400 Summary ---
+Forget Loss: 0.8297, Retain MSE: 0.5213, Retain CE: 1.3447
+Step 400 Accuracy - Forget: 19.44% | Retain: 78.13%
+
+--- Step 500 Summary ---
+Forget Loss: 0.8062, Retain MSE: 0.5042, Retain CE: 1.3010
+Step 500 Accuracy - Forget: 15.95% | Retain: 77.84%
+
+--- Step 600 Summary ---
+Forget Loss: 0.7927, Retain MSE: 0.4895, Retain CE: 1.2735
+Step 600 Accuracy - Forget: 15.12% | Retain: 78.72%

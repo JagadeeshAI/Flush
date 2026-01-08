@@ -326,8 +326,8 @@ def find_safe_border_targets(forget_centroids, retain_centroids, n_targets, min_
             # Accept if: 1) Safe distance from forget classes, 2) Good border balance
             if min_distance_to_forget >= min_forget_distance and border_balance < 0.3:
                 safe_targets.append(border_point)
-                print(f"Safe border target {len(safe_targets)}: between retain {retain_class_ids[i]}-{retain_class_ids[j]}, "
-                      f"min_forget_dist={min_distance_to_forget:.3f}")
+                # print(f"Safe border target {len(safe_targets)}: between retain {retain_class_ids[i]}-{retain_class_ids[j]}, "
+                #       f"min_forget_dist={min_distance_to_forget:.3f}")
     
     # If we need more targets, generate some with perturbations
     while len(safe_targets) < n_targets and attempts < max_attempts:
