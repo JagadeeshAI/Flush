@@ -1,0 +1,109 @@
+=== Voronoi Unlearning (ADVANCE) ===
+Method: advance
+Epochs: 3
+Batch size: 32
+Learning rate: 0.0001
+Use regularization: True
+Lambda regularization: 0.01
+Note: Regularization will start after step 1000
+Loading model from checkpoint: checkpoints/best.pth
+Total parameters: 5,691,172
+Trainable parameters: 147,456
+Trainable percentage: 2.59%
+Extracting embeddings...
+Computing retain class centroids...
+Computing forget class centroids...
+Computing Voronoi vertices for 50 retain classes...
+Computing true Voronoi vertices for 50 centroids...
+Generated 50 Voronoi vertices
+Selecting 50 target vertices...
+Assigning targets to forget classes using 'advance' method...
+Using adaptive nearest target assignment...
+Average travel distance to targets: 18.5586
+Setup complete: 50 targets assigned
+
+=== Initial Evaluation ===
+Forget Acc: 73.79% | Retain Acc: 75.76%
+
+=== Starting Step-based Voronoi Unlearning for 1995 steps ===
+Forget loader batches: 665, Retain loader batches: 66
+Validation every 100 steps
+
+--- Step 100 Summary ---
+Forget Loss: 1.2537, Retain MSE: 0.7839, Retain CE: 0.9457
+Step 100 Accuracy - Forget: 47.52% | Retain: 76.11%
+
+--- Step 200 Summary ---
+Forget Loss: 0.4406, Retain MSE: 0.5197, Retain CE: 1.3367
+Step 200 Accuracy - Forget: 42.00% | Retain: 78.96%
+
+--- Step 300 Summary ---
+Forget Loss: 0.3828, Retain MSE: 0.4763, Retain CE: 1.3131
+Step 300 Accuracy - Forget: 38.40% | Retain: 79.20%
+
+--- Step 400 Summary ---
+Forget Loss: 0.3535, Retain MSE: 0.4734, Retain CE: 1.3203
+Step 400 Accuracy - Forget: 34.32% | Retain: 78.91%
+
+--- Step 500 Summary ---
+Forget Loss: 0.3439, Retain MSE: 0.4434, Retain CE: 1.2830
+Step 500 Accuracy - Forget: 33.55% | Retain: 79.65%
+
+🚀 Regularization activated at step 501!
+
+--- Step 600 Summary ---
+Forget Loss: 0.3361, Retain MSE: 0.4363, Retain CE: 1.2756
+Step 600 Accuracy - Forget: 31.65% | Retain: 80.08%
+
+--- Step 700 Summary ---
+Forget Loss: 0.3296, Retain MSE: 0.4048, Retain CE: 1.2227
+Step 700 Accuracy - Forget: 29.55% | Retain: 79.95%
+
+--- Step 800 Summary ---
+Forget Loss: 0.3227, Retain MSE: 0.4174, Retain CE: 1.2413
+Step 800 Accuracy - Forget: 28.64% | Retain: 79.92%
+
+--- Step 900 Summary ---
+Forget Loss: 0.3175, Retain MSE: 0.4006, Retain CE: 1.2093
+Step 900 Accuracy - Forget: 27.65% | Retain: 79.97%
+
+--- Step 1000 Summary ---
+Forget Loss: 0.3144, Retain MSE: 0.3998, Retain CE: 1.2053
+Step 1000 Accuracy - Forget: 26.35% | Retain: 80.00%
+
+--- Step 1100 Summary ---
+Forget Loss: 0.3122, Retain MSE: 0.3900, Retain CE: 1.1981, Reg Loss: 0.8349
+Step 1100 Accuracy - Forget: 25.20% | Retain: 79.87%
+
+--- Step 1200 Summary ---
+Forget Loss: 0.3124, Retain MSE: 0.3840, Retain CE: 1.1896, Reg Loss: 0.8272
+Step 1200 Accuracy - Forget: 23.87% | Retain: 80.37%
+
+--- Step 1300 Summary ---
+Forget Loss: 0.3095, Retain MSE: 0.3884, Retain CE: 1.1922, Reg Loss: 0.8199
+Step 1300 Accuracy - Forget: 23.84% | Retain: 79.89%
+
+--- Step 1400 Summary ---
+Forget Loss: 0.3058, Retain MSE: 0.3777, Retain CE: 1.1813, Reg Loss: 0.8129
+Step 1400 Accuracy - Forget: 22.91% | Retain: 80.27%
+
+--- Step 1500 Summary ---
+Forget Loss: 0.3027, Retain MSE: 0.3800, Retain CE: 1.1852, Reg Loss: 0.8066
+Step 1500 Accuracy - Forget: 20.77% | Retain: 80.03%
+
+--- Step 1600 Summary ---
+Forget Loss: 0.3028, Retain MSE: 0.3795, Retain CE: 1.1785, Reg Loss: 0.8005
+Step 1600 Accuracy - Forget: 19.97% | Retain: 80.05%
+
+--- Step 1700 Summary ---
+Forget Loss: 0.2979, Retain MSE: 0.3712, Retain CE: 1.1667, Reg Loss: 0.7947
+Step 1700 Accuracy - Forget: 20.45% | Retain: 80.16%
+
+--- Step 1800 Summary ---
+Forget Loss: 0.2993, Retain MSE: 0.3689, Retain CE: 1.1625, Reg Loss: 0.7892
+Step 1800 Accuracy - Forget: 19.20% | Retain: 79.97%
+
+--- Step 1900 Summary ---
+Forget Loss: 0.2945, Retain MSE: 0.3683, Retain CE: 1.1583, Reg Loss: 0.7839
+Step 1900 Accuracy - Forget: 18.35% | Retain: 79.68%
+Voronoi Unlearning completed! Model saved to 'voronoi_unlearned_advance.pth'

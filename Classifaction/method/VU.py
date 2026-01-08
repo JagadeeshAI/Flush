@@ -167,25 +167,26 @@ class VoronoiUnlearning:
         
         print(f"\n=== Starting Step-based Voronoi Unlearning for {max_steps} steps ===")
         print(f"Forget loader batches: {len(forget_train_loader)}, Retain loader batches: {len(retain_train_loader)}")
+        print(f"Training ratio: 5:1 (forget:retain batches)")
         print(f"Validation every 100 steps")
         
         step_losses = {'forget': 0.0, 'retain_mse': 0.0, 'retain_ce': 0.0, 'reg': 0.0, 'count': 0}
         global_step = 0
         
-        # Step-based training loop
+        # Step-based training loop with 5:1 forget:retain ratio
         pbar = tqdm(range(max_steps), desc="Training Steps")
         reg_started = False
         
-        for _ in pbar:
+        for step_idx in pbar:
             self.model.train()
             global_step += 1
             
             # Print message when regularization starts
-            if self.use_regularization and global_step == 501 and not reg_started:
+            if self.use_regularization and global_step == 1001 and not reg_started:
                 print(f"\n🚀 Regularization activated at step {global_step}!")
                 reg_started = True
             
-            # Process one forget batch
+            # Process forget batch (always)
             try:
                 forget_batch = next(forget_iter)
             except StopIteration:
@@ -204,24 +205,25 @@ class VoronoiUnlearning:
                 step_losses[key] = step_losses.get(key, 0.0) + value
             step_losses['count'] += 1
             
-            # Process one retain batch
-            try:
-                retain_batch = next(retain_iter)
-            except StopIteration:
-                # Reset retain iterator when exhausted
-                retain_iter = iter(retain_train_loader)
-                retain_batch = next(retain_iter)
-            
-            loss_retain, loss_components = self.unlearning_step_retain(retain_batch, optimizer, global_step)
-            
-            # Backprop for retain loss
-            optimizer.zero_grad()
-            loss_retain.backward()
-            optimizer.step()
-            
-            for key, value in loss_components.items():
-                step_losses[key] = step_losses.get(key, 0.0) + value
-            step_losses['count'] += 1
+            # Process retain batch only every 5th step (5:1 ratio)
+            if (step_idx + 1) % 5 == 0:
+                try:
+                    retain_batch = next(retain_iter)
+                except StopIteration:
+                    # Reset retain iterator when exhausted
+                    retain_iter = iter(retain_train_loader)
+                    retain_batch = next(retain_iter)
+                
+                loss_retain, loss_components = self.unlearning_step_retain(retain_batch, optimizer, global_step)
+                
+                # Backprop for retain loss
+                optimizer.zero_grad()
+                loss_retain.backward()
+                optimizer.step()
+                
+                for key, value in loss_components.items():
+                    step_losses[key] = step_losses.get(key, 0.0) + value
+                step_losses['count'] += 1
             
             # Update progress bar with current losses
             if step_losses['count'] > 0:
