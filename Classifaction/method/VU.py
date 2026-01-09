@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import sys, os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+import time
 
 from codes.data import get_dataloaders
 from codes.utils import get_model
@@ -95,6 +96,8 @@ class VoronoiUnlearning:
         
         return total_loss, components
     
+    
+
     def unlearn(self, data_dir, batch_size=32, epochs=5, lr=1e-4):
         """Main unlearning loop"""
         # Setup data loaders
@@ -115,6 +118,10 @@ class VoronoiUnlearning:
         max_steps = max(len(forget_loader), len(retain_loader)) * epochs
         forget_iter, retain_iter = iter(forget_loader), iter(retain_loader)
         losses = {'forget': 0.0, 'constraint': 0.0, 'retain_mse': 0.0, 'retain_ce': 0.0, 'reg': 0.0, 'count': 0}
+        
+        # Timing variables
+        step_start_time = time.time()
+        total_start_time = time.time()
         
         # Training loop
         pbar = tqdm(range(max_steps), desc="Training")
@@ -141,14 +148,21 @@ class VoronoiUnlearning:
                 pbar.set_postfix(avg_losses)
             
             if step % 100 == 0:
+                step_time = time.time() - step_start_time
                 f_acc, r_acc = evaluate_model(self.model, data_dir, batch_size//2, self.forget_classes, self.retain_classes, self.device)
-                print(f"\nStep {step} - Forget: {f_acc:.2f}% | Retain: {r_acc:.2f}%")
+                print(f"\nStep {step} - Forget: {f_acc:.2f}% | Retain: {r_acc:.2f}% | Time: {step_time:.2f}s")
                 if self.enable_visualization: create_visualization_step(self.visualizer, self.model, step, data_dir, batch_size, self.device, self.target_assignment)
                 losses = {'forget': 0.0, 'constraint': 0.0, 'retain_mse': 0.0, 'retain_ce': 0.0, 'reg': 0.0, 'count': 0}
+                step_start_time = time.time()
             
             pbar.update(1)
         
         pbar.close()
+        
+        total_time = time.time() - total_start_time
+        print(f"\n=== Training Complete ===")
+        print(f"Total time: {total_time:.2f}s ({total_time/60:.2f} min)")
+        
         return self.model
     
 
