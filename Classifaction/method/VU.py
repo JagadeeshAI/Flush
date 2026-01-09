@@ -4,6 +4,7 @@ from torch.utils.data import DataLoader
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+import time
 
 from codes.data import get_dataloaders
 from codes.utils import get_model
@@ -71,27 +72,6 @@ class VoronoiUnlearning:
         del target_vertices
         gc.collect()
     
-    # def unlearning_step_forget(self, batch, optimizer, global_step):
-    #     """Process forget batch and return loss"""
-    #     imgs, labels = batch
-    #     imgs, labels = imgs.to(self.device), labels.to(self.device)
-        
-    #     # Get features from penultimate layer
-    #     embeddings = extract_features(self.model, imgs)
-        
-    #     # L_forget = Σ MSE(embedding(x_forget), assigned_vertex)
-    #     loss_forget = compute_forget_loss(embeddings, labels, self.target_assignment)*2
-        
-    #     # Add group sparse regularization if enabled and after 1000 steps
-    #     if self.use_regularization and global_step > 1000:
-    #         reg_loss = compute_group_sparse_regularization(self.model, self.lambda_reg)
-    #         total_loss = loss_forget + reg_loss
-    #         loss_components = {'forget': loss_forget.item(), 'reg': reg_loss.item()}
-    #     else:
-    #         total_loss = loss_forget
-    #         loss_components = {'forget': loss_forget.item()}
-        
-    #     return total_loss, loss_components
 
     def unlearning_step_forget(self, batch, optimizer, global_step):
         """Process forget batch and return loss"""
@@ -153,7 +133,7 @@ class VoronoiUnlearning:
         loss_retain_ce = nn.CrossEntropyLoss()(logits, labels)
         
         # Total retain loss
-        loss_retain_total = loss_retain_mse + loss_retain_ce*0.5
+        loss_retain_total = loss_retain_mse + loss_retain_ce
         
         # Add group sparse regularization if enabled and after 1000 steps
         if self.use_regularization and global_step > 1000:
@@ -172,6 +152,7 @@ class VoronoiUnlearning:
         
         return loss_retain_total, loss_components
     
+
     def unlearn(self, data_dir, batch_size=32, epochs=5, lr=1e-4, lambda_retain=3.0):
         """Main unlearning loop"""
         # Get forget dataloaders (classes 0-49, ratio 1.0)
@@ -208,13 +189,17 @@ class VoronoiUnlearning:
         
         print(f"\n=== Starting Step-based Voronoi Unlearning for {max_steps} steps ===")
         print(f"Forget loader batches: {len(forget_train_loader)}, Retain loader batches: {len(retain_train_loader)}")
-        print(f"Training ratio: 5:1 (forget:retain batches)")
+        print(f"Training ratio: 1:1 (forget:retain batches)")
         print(f"Validation every 100 steps")
         
         step_losses = {'forget': 0.0, 'retain_mse': 0.0, 'retain_ce': 0.0, 'reg': 0.0, 'count': 0}
         global_step = 0
         
-        # Step-based training loop with 5:1 forget:retain ratio
+        # Timing variables
+        step_start_time = time.time()
+        total_start_time = time.time()
+        
+        # Step-based training loop with 1:1 forget:retain ratio
         pbar = tqdm(range(max_steps), desc="Training Steps")
         reg_started = False
         
@@ -227,11 +212,10 @@ class VoronoiUnlearning:
                 print(f"\n🚀 Regularization activated at step {global_step}!")
                 reg_started = True
             
-            # Process forget batch (always)
+            # Process forget batch
             try:
                 forget_batch = next(forget_iter)
             except StopIteration:
-                # Reset forget iterator when exhausted
                 forget_iter = iter(forget_train_loader)
                 forget_batch = next(forget_iter)
             
@@ -246,25 +230,23 @@ class VoronoiUnlearning:
                 step_losses[key] = step_losses.get(key, 0.0) + value
             step_losses['count'] += 1
             
-            # Process retain batch only every 5th step (5:1 ratio)
-            if (step_idx + 1) % 1 == 0:
-                try:
-                    retain_batch = next(retain_iter)
-                except StopIteration:
-                    # Reset retain iterator when exhausted
-                    retain_iter = iter(retain_train_loader)
-                    retain_batch = next(retain_iter)
-                
-                loss_retain, loss_components = self.unlearning_step_retain(retain_batch, optimizer, global_step)
-                
-                # Backprop for retain loss
-                optimizer.zero_grad()
-                loss_retain.backward()
-                optimizer.step()
-                
-                for key, value in loss_components.items():
-                    step_losses[key] = step_losses.get(key, 0.0) + value
-                step_losses['count'] += 1
+            # Process retain batch (1:1 ratio)
+            try:
+                retain_batch = next(retain_iter)
+            except StopIteration:
+                retain_iter = iter(retain_train_loader)
+                retain_batch = next(retain_iter)
+            
+            loss_retain, loss_components = self.unlearning_step_retain(retain_batch, optimizer, global_step)
+            
+            # Backprop for retain loss
+            optimizer.zero_grad()
+            loss_retain.backward()
+            optimizer.step()
+            
+            for key, value in loss_components.items():
+                step_losses[key] = step_losses.get(key, 0.0) + value
+            step_losses['count'] += 1
             
             # Update progress bar with current losses
             if step_losses['count'] > 0:
@@ -287,6 +269,9 @@ class VoronoiUnlearning:
             
             # Validate every 100 steps
             if global_step % 100 == 0:
+                # Calculate time for last 100 steps
+                step_time = time.time() - step_start_time
+                
                 # Print step summary
                 print(f"\n--- Step {global_step} Summary ---")
                 if self.use_regularization and step_losses['reg'] > 0:
@@ -295,14 +280,22 @@ class VoronoiUnlearning:
                 else:
                     print(f"Forget Loss: {avg_forget:.4f}, Retain MSE: {avg_retain_mse:.4f}, Retain CE: {avg_retain_ce:.4f}")
                 
+                print(f"Time (100 steps): {step_time:.2f}s")
+                
                 # Evaluate model performance
                 torch.cuda.empty_cache() if torch.cuda.is_available() else None
                 forget_acc, retain_acc = evaluate_on_ranges(self.model, data_dir, self.forget_classes, self.retain_classes, batch_size//2, self.device)
                 print(f"Step {global_step} Accuracy - Forget: {forget_acc:.2f}% | Retain: {retain_acc:.2f}%")
                 torch.cuda.empty_cache() if torch.cuda.is_available() else None
                 
-                # Reset step losses for next 100 steps
+                # Reset step losses and timer for next 100 steps
                 step_losses = {'forget': 0.0, 'retain_mse': 0.0, 'retain_ce': 0.0, 'reg': 0.0, 'count': 0}
+                step_start_time = time.time()
+        
+        # Print total time
+        total_time = time.time() - total_start_time
+        print(f"\n=== Training Complete ===")
+        print(f"Total training time: {total_time:.2f}s ({total_time/60:.2f} minutes)")
         
         return self.model
 

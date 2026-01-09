@@ -8,7 +8,6 @@ def count_parameters(model):
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     return total_params, trainable_params
 
-
 def get_model(num_classes, model_path=None, device="cpu"):
     if model_path is not None:
         print(f"Loading model from checkpoint: {model_path}")
@@ -26,6 +25,7 @@ def get_model(num_classes, model_path=None, device="cpu"):
             target_modules=["qkv"],
             lora_dropout=0.1,
             bias="none",
+            modules_to_save=["head"]  # Make head trainable
         )
         
         model = get_peft_model(model, lora_config)
@@ -49,6 +49,7 @@ def get_model(num_classes, model_path=None, device="cpu"):
             target_modules=["qkv"],
             lora_dropout=0.1,
             bias="none",
+            modules_to_save=["head"]  # Make head trainable
         )
         
         model = get_peft_model(model, lora_config)
