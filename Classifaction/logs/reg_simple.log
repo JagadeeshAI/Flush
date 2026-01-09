@@ -1,0 +1,70 @@
+=== Voronoi Unlearning (simple) ===
+Loading model from checkpoint: checkpoints/best.pth
+Total parameters: 5,691,172
+Trainable parameters: 166,756
+Trainable percentage: 2.93%
+Setting up targets...
+Generating 50 targets on bisector boundaries...
+Generated 50 targets on perpendicular bisectors
+Using random target assignment with unique targets...
+Average travel distance to targets: 20.1810
+Setup complete: 50 targets assigned
+
+=== Initial Evaluation ===
+Forget Acc: 73.79% | Retain Acc: 75.76%
+
+Step 25 - Forget: 58.37% | Retain: 81.01% | Time: 7.72s
+
+Step 50 - Forget: 41.63% | Retain: 81.57% | Time: 9.65s
+
+Step 75 - Forget: 13.36% | Retain: 75.20% | Time: 10.54s
+
+Step 100 - Forget: 5.12% | Retain: 74.56% | Time: 11.49s
+
+Step 125 - Forget: 2.08% | Retain: 74.24% | Time: 12.08s
+
+Step 150 - Forget: 0.85% | Retain: 73.63% | Time: 13.65s
+
+Step 175 - Forget: 0.40% | Retain: 73.57% | Time: 11.73s
+
+Step 200 - Forget: 0.13% | Retain: 72.59% | Time: 12.76s
+
+Step 225 - Forget: 0.08% | Retain: 73.47% | Time: 13.63s
+
+Step 250 - Forget: 0.05% | Retain: 73.01% | Time: 12.73s
+
+Step 275 - Forget: 0.03% | Retain: 72.72% | Time: 13.48s
+
+Step 300 - Forget: 0.03% | Retain: 73.76% | Time: 12.39s
+
+Step 325 - Forget: 0.00% | Retain: 75.33% | Time: 13.55s
+
+Step 350 - Forget: 0.00% | Retain: 75.84% | Time: 12.92s
+
+Step 375 - Forget: 0.00% | Retain: 74.56% | Time: 12.84s
+
+Step 400 - Forget: 0.00% | Retain: 74.43% | Time: 13.86s
+
+Step 425 - Forget: 0.00% | Retain: 75.49% | Time: 12.19s
+
+Step 450 - Forget: 0.00% | Retain: 76.85% | Time: 13.73s
+
+Step 475 - Forget: 0.00% | Retain: 76.29% | Time: 13.20s
+
+Step 500 - Forget: 0.00% | Retain: 77.36% | Time: 12.75s
+
+Step 525 - Forget: 0.00% | Retain: 76.85% | Time: 13.16s
+
+Step 550 - Forget: 0.00% | Retain: 77.36% | Time: 12.22s
+
+Step 575 - Forget: 0.00% | Retain: 77.39% | Time: 13.57s
+
+Step 600 - Forget: 0.00% | Retain: 77.92% | Time: 12.82s
+
+Step 625 - Forget: 0.00% | Retain: 78.51% | Time: 12.43s
+
+Step 650 - Forget: 0.00% | Retain: 78.75% | Time: 13.58s
+
+=== Training Complete ===
+Total time: 667.58s (11.13 min)
+Model saved to 'voronoi_unlearned_simple.pth'

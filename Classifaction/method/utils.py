@@ -42,7 +42,7 @@ def compute_voronoi_vertices_from_weights(weights_dict, max_vertices=50):
     weights = torch.stack(list(weights_dict.values()))
     n_weights = weights.shape[0]
     
-    print(f"Generating {max_vertices} targets on bisector boundaries...")
+    print(f"Generating targets from {max_vertices} weight pairs at multiple distances...")
     
     # Get all weight pairs, prioritize distant pairs
     weight_pairs = list(combinations(range(n_weights), 2))
@@ -54,11 +54,16 @@ def compute_voronoi_vertices_from_weights(weights_dict, max_vertices=50):
     
     vertices = []
     for i, j, _ in pair_distances[:max_vertices]:
-        # Midpoint on perpendicular bisector
+        # Add intermediate points at multiple distances along the line
+        for alpha in [0.25, 0.5, 0.75]:
+            interpolated = alpha * weights[i] + (1-alpha) * weights[j]
+            vertices.append(interpolated)
+        
+        # Also add the midpoint (0.5 case, but keeping for clarity)
         midpoint = (weights[i] + weights[j]) / 2
         vertices.append(midpoint)
     
-    print(f"Generated {len(vertices)} targets on perpendicular bisectors")
+    print(f"Generated {len(vertices)} targets at varying distances along weight boundaries")
     
     vertices_torch = torch.stack(vertices)
     degrees = [2] * len(vertices_torch)
@@ -101,7 +106,8 @@ def select_target_vertices(vertices, degrees, n_targets):
         return torch.stack(selected_vertices[:n_targets])
 
 
-def assign_targets_to_classes(target_vertices, forget_classes, forget_centroids=None, method="simple"):
+def assign_targets_to_classes(target_vertices, forget_classes, forget_centroids=None, method="simple", 
+                             retain_weights_stacked=None, forget_logits=None):
     """Assign target vertices to forget classes with unique targets"""
     if target_vertices is None:
         return {}
@@ -151,12 +157,12 @@ def assign_targets_to_classes(target_vertices, forget_classes, forget_centroids=
             print("Average travel distance: Not calculated (no forget centroids available)")
     
     elif method == "advance":
-        # Nearest target assignment (adaptive method)
+        # Nearest target assignment using embedding-space distances to minimize MSE travel distance
         if forget_centroids is None:
             print("Warning: No forget centroids provided, falling back to random assignment")
             return assign_targets_to_classes(target_vertices, forget_classes, None, "simple")
         
-        print("Using adaptive nearest target assignment...")
+        print("Using adaptive assignment with embedding-space distances...")
         total_distance = 0.0
         
         for class_id in forget_classes:
@@ -167,10 +173,10 @@ def assign_targets_to_classes(target_vertices, forget_classes, forget_centroids=
                 if target_vertices.device != forget_centroid.device:
                     forget_centroid = forget_centroid.to(target_vertices.device)
                 
-                # Compute distances to all target vertices
+                # Compute embedding-space distances to minimize actual MSE travel distance
                 distances = torch.norm(target_vertices - forget_centroid.unsqueeze(0), dim=1)
                 
-                # Assign to nearest vertex
+                # Assign to nearest vertex in embedding space
                 nearest_idx = torch.argmin(distances)
                 assignment[class_id] = target_vertices[nearest_idx]
                 
@@ -180,13 +186,52 @@ def assign_targets_to_classes(target_vertices, forget_classes, forget_centroids=
         # Report average travel distance
         if len(assignment) > 0:
             avg_distance = total_distance / len(assignment)
-            print(f"Average travel distance to targets: {avg_distance:.4f}")
+            print(f"Average embedding-space travel distance to targets: {avg_distance:.4f}")
     
     else:
         raise ValueError(f"Unknown assignment method: {method}")
     
     return assignment
 
+
+def orthogonalize_embeddings_to_weights(embeddings, weights):
+    """Orthogonalize embeddings to given weights using Gram-Schmidt process"""
+    # weights: [num_classes, embed_dim] or stacked weight vectors
+    # embeddings: [batch_size, embed_dim]
+    
+    if len(weights.shape) == 1:
+        weights = weights.unsqueeze(0)  # Make it [1, embed_dim]
+    
+    orthogonalized_embeddings = embeddings.clone()
+    
+    for weight_vector in weights:
+        # Normalize the weight vector
+        weight_norm = weight_vector / (torch.norm(weight_vector) + 1e-8)
+        
+        # Project embeddings onto weight vector
+        projection = torch.sum(orthogonalized_embeddings * weight_norm.unsqueeze(0), dim=1, keepdim=True) * weight_norm.unsqueeze(0)
+        
+        # Remove the projection (orthogonalize)
+        orthogonalized_embeddings = orthogonalized_embeddings - projection
+    
+    return orthogonalized_embeddings
+
+
+def compute_auxiliary_logit_constraint(logits, forget_classes, retain_classes, margin=2.0):
+    """Compute auxiliary logit constraint: max(retain_logits) > max(forget_logits) + margin"""
+    # Extract forget and retain logits
+    forget_logits = logits[:, forget_classes]  # Shape: [batch_size, num_forget_classes]
+    retain_logits = logits[:, retain_classes]  # Shape: [batch_size, num_retain_classes]
+    
+    # Get max logits
+    max_forget_logits, _ = forget_logits.max(dim=1)  # Shape: [batch_size]
+    max_retain_logits, _ = retain_logits.max(dim=1)  # Shape: [batch_size]
+    
+    # Compute constraint: we want max_retain > max_forget + margin
+    # Loss is 0 if constraint is satisfied, positive otherwise
+    constraint_violation = torch.relu(max_forget_logits + margin - max_retain_logits)
+    
+    return constraint_violation.mean()
 
 
 

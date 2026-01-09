@@ -1,0 +1,36 @@
+=== Voronoi Unlearning (advance) ===
+Loading model from checkpoint: checkpoints/best.pth
+Total parameters: 5,691,172
+Trainable parameters: 166,756
+Trainable percentage: 2.93%
+Setting up targets...
+Generating targets from 50 weight pairs at multiple distances...
+Generated 200 targets at varying distances along weight boundaries
+Using adaptive assignment with embedding-space distances...
+Average embedding-space travel distance to targets: 20.1188
+Setup complete: 50 targets assigned
+
+=== Initial Evaluation ===
+Forget Acc: 73.79% | Retain Acc: 75.76%
+
+Step 25 - Forget: 59.52% | Retain: 81.57% | Time: 12.11s
+
+Step 50 - Forget: 41.55% | Retain: 81.25% | Time: 12.66s
+
+Step 75 - Forget: 14.40% | Retain: 74.53% | Time: 13.47s
+
+Step 100 - Forget: 6.35% | Retain: 74.51% | Time: 13.62s
+
+Step 125 - Forget: 2.64% | Retain: 74.13% | Time: 13.53s
+
+Step 150 - Forget: 0.93% | Retain: 73.01% | Time: 13.78s
+
+Step 175 - Forget: 0.45% | Retain: 73.31% | Time: 14.39s
+
+Step 200 - Forget: 0.08% | Retain: 73.07% | Time: 13.12s
+
+Step 225 - Forget: 0.05% | Retain: 72.93% | Time: 14.40s
+
+Step 250 - Forget: 0.00% | Retain: 72.56% | Time: 13.58s
+
+Step 275 - Forget: 0.00% | Retain: 73.95% | Time: 13.51s
