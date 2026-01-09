@@ -43,12 +43,7 @@ class VoronoiUnlearning:
         vertices, degrees = compute_voronoi_vertices_from_weights(retain_weights, max_vertices=50)
         target_vertices = select_target_vertices(vertices, degrees, len(self.forget_classes))
         
-        # Orthogonalize targets to forget weights
-        forget_weights = extract_classifier_weights(self.model, self.forget_classes)
-        forget_weight_vectors = torch.stack(list(forget_weights.values()))
-        if target_vertices.device != forget_weight_vectors.device:
-            forget_weight_vectors = forget_weight_vectors.to(target_vertices.device)
-        target_vertices = orthogonalize_embeddings_to_weights(target_vertices, forget_weight_vectors)
+        # Skip orthogonalization step
         
         self.target_assignment = assign_targets_to_classes(target_vertices, self.forget_classes, self.forget_centroids, self.method)
         
@@ -68,7 +63,7 @@ class VoronoiUnlearning:
             print(f"Reassigned viz classes to separated targets (indices: {selected_idx})")
         
         print(f"Setup complete: {len(self.target_assignment)} targets assigned")
-        del target_vertices, retain_weights, forget_weights, forget_weight_vectors; gc.collect()
+        del target_vertices, retain_weights; gc.collect()
     
     def compute_losses(self, batch, global_step, is_forget=True):
         """Compute losses for forget or retain batch"""
@@ -78,10 +73,8 @@ class VoronoiUnlearning:
         
         if is_forget:
             loss_main = compute_forget_loss(embeddings, labels, self.target_assignment)
-            logits = self.model(imgs)
-            loss_constraint = compute_auxiliary_logit_constraint(logits, self.forget_classes, self.retain_classes, margin=2.0)
-            total_loss = loss_main + 0.1 * loss_constraint
-            components = {'forget': loss_main.item(), 'constraint': loss_constraint.item()}
+            total_loss = loss_main
+            components = {'forget': loss_main.item()}
         else:
             loss_retain_mse = compute_retain_loss(embeddings, labels, self.retain_centroids)
             logits = self.model(imgs)
@@ -117,7 +110,7 @@ class VoronoiUnlearning:
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr)
         max_steps = max(len(forget_loader), len(retain_loader)) * epochs
         forget_iter, retain_iter = iter(forget_loader), iter(retain_loader)
-        losses = {'forget': 0.0, 'constraint': 0.0, 'retain_mse': 0.0, 'retain_ce': 0.0, 'reg': 0.0, 'count': 0}
+        losses = {'forget': 0.0, 'retain_mse': 0.0, 'retain_ce': 0.0, 'reg': 0.0, 'count': 0}
         
         # Timing variables
         step_start_time = time.time()
@@ -147,12 +140,12 @@ class VoronoiUnlearning:
                 avg_losses = {k: f"{v/losses['count']:.4f}" for k, v in losses.items() if k != 'count'}
                 pbar.set_postfix(avg_losses)
             
-            if step % 100 == 0:
+            if step % 110 == 0:
                 step_time = time.time() - step_start_time
                 f_acc, r_acc = evaluate_model(self.model, data_dir, batch_size//2, self.forget_classes, self.retain_classes, self.device)
                 print(f"\nStep {step} - Forget: {f_acc:.2f}% | Retain: {r_acc:.2f}% | Time: {step_time:.2f}s")
                 if self.enable_visualization: create_visualization_step(self.visualizer, self.model, step, data_dir, batch_size, self.device, self.target_assignment)
-                losses = {'forget': 0.0, 'constraint': 0.0, 'retain_mse': 0.0, 'retain_ce': 0.0, 'reg': 0.0, 'count': 0}
+                losses = {'forget': 0.0, 'retain_mse': 0.0, 'retain_ce': 0.0, 'reg': 0.0, 'count': 0}
                 step_start_time = time.time()
             
             pbar.update(1)

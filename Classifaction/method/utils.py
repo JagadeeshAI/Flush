@@ -188,44 +188,6 @@ def assign_targets_to_classes(target_vertices, forget_classes, forget_centroids=
     return assignment
 
 
-def orthogonalize_embeddings_to_weights(embeddings, weights):
-    """Orthogonalize embeddings to given weights using Gram-Schmidt process"""
-    # weights: [num_classes, embed_dim] or stacked weight vectors
-    # embeddings: [batch_size, embed_dim]
-    
-    if len(weights.shape) == 1:
-        weights = weights.unsqueeze(0)  # Make it [1, embed_dim]
-    
-    orthogonalized_embeddings = embeddings.clone()
-    
-    for weight_vector in weights:
-        # Normalize the weight vector
-        weight_norm = weight_vector / (torch.norm(weight_vector) + 1e-8)
-        
-        # Project embeddings onto weight vector
-        projection = torch.sum(orthogonalized_embeddings * weight_norm.unsqueeze(0), dim=1, keepdim=True) * weight_norm.unsqueeze(0)
-        
-        # Remove the projection (orthogonalize)
-        orthogonalized_embeddings = orthogonalized_embeddings - projection
-    
-    return orthogonalized_embeddings
-
-
-def compute_auxiliary_logit_constraint(logits, forget_classes, retain_classes, margin=2.0):
-    """Compute auxiliary logit constraint: max(retain_logits) > max(forget_logits) + margin"""
-    # Extract forget and retain logits
-    forget_logits = logits[:, forget_classes]  # Shape: [batch_size, num_forget_classes]
-    retain_logits = logits[:, retain_classes]  # Shape: [batch_size, num_retain_classes]
-    
-    # Get max logits
-    max_forget_logits, _ = forget_logits.max(dim=1)  # Shape: [batch_size]
-    max_retain_logits, _ = retain_logits.max(dim=1)  # Shape: [batch_size]
-    
-    # Compute constraint: we want max_retain > max_forget + margin
-    # Loss is 0 if constraint is satisfied, positive otherwise
-    constraint_violation = torch.relu(max_forget_logits + margin - max_retain_logits)
-    
-    return constraint_violation.mean()
 
 
 def compute_forget_loss(embeddings, labels, target_assignment):
