@@ -51,7 +51,20 @@ class VoronoiUnlearning:
         
         self.target_assignment = assign_targets_to_classes(target_vertices, self.forget_classes, self.forget_centroids, self.method)
         
+        # MOVE THIS LINE HERE (was at line 49)
         if self.visualizer: self.visualizer.setup_visualization(get_visualization_data(dataloader))
+        
+        # ADD THIS BLOCK (new)
+        if self.visualizer:
+            all_targets = torch.stack(list(self.target_assignment.values()))
+            distances = torch.cdist(all_targets, all_targets)
+            selected_idx = [distances.sum(dim=1).argmax().item()]
+            for _ in range(2):
+                min_dists = distances[:, selected_idx].min(dim=1)[0]
+                selected_idx.append(min_dists.argmax().item())
+            for i, class_id in enumerate([0, 1, 2]):
+                self.target_assignment[class_id] = all_targets[selected_idx[i]]
+            print(f"Reassigned viz classes to separated targets (indices: {selected_idx})")
         
         print(f"Setup complete: {len(self.target_assignment)} targets assigned")
         del target_vertices, retain_weights, forget_weights, forget_weight_vectors; gc.collect()

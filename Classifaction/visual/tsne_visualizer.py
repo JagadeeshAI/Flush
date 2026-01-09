@@ -207,7 +207,7 @@ class TSNEVoronoiVisualizer:
         current_tsne_projections = self._transform_to_tsne(current_embeddings_np)
         
         # Compute current centroids (only for viz classes)
-        from method.utils import compute_class_centroids
+        from utils.utils import compute_class_centroids
         
         forget_centroids = compute_class_centroids(viz_embeddings, viz_labels, self.viz_forget_classes)
         retain_centroids = compute_class_centroids(viz_embeddings, viz_labels, self.viz_retain_classes)

@@ -3,7 +3,8 @@ import torch.nn as nn
 import numpy as np
 from itertools import combinations
 import random
-
+from scipy.spatial import Voronoi
+from sklearn.decomposition import PCA
 
 def extract_classifier_weights(model, class_list):
     """Extract classifier head weights for specified classes"""
@@ -34,95 +35,38 @@ def extract_classifier_weights(model, class_list):
 
 
 def compute_voronoi_vertices_from_weights(weights_dict, max_vertices=50):
-    """Compute Voronoi vertices ensuring maximum spatial distribution"""
+    """Generate targets on perpendicular bisectors between retain class pairs"""
     import gc
-    from tqdm import tqdm
+    from itertools import combinations
     
     weights = torch.stack(list(weights_dict.values()))
     n_weights = weights.shape[0]
+    
+    print(f"Generating {max_vertices} targets on bisector boundaries...")
+    
+    # Get all weight pairs, prioritize distant pairs
+    weight_pairs = list(combinations(range(n_weights), 2))
+    
+    # Sort pairs by distance (farthest first)
+    pair_distances = [(i, j, torch.norm(weights[i] - weights[j]).item()) 
+                      for i, j in weight_pairs]
+    pair_distances.sort(key=lambda x: x[2], reverse=True)
+    
     vertices = []
-    degrees = []
+    for i, j, _ in pair_distances[:max_vertices]:
+        # Midpoint on perpendicular bisector
+        midpoint = (weights[i] + weights[j]) / 2
+        vertices.append(midpoint)
     
-    print(f"Computing well-distributed Voronoi vertices from {n_weights} classifier head weights...")
+    print(f"Generated {len(vertices)} targets on perpendicular bisectors")
     
-    # Strategy: Force targets to be in different regions by using distant weight pairs
-    weight_center = weights.mean(dim=0)
-    
-    # Create target regions in different directions from center
-    num_targets_needed = min(max_vertices, 50)  # Cap at reasonable number
-    
-    pbar = tqdm(desc="Computing spatially distributed vertices", total=num_targets_needed)
-    
-    # Strategy: Create targets at different distances and directions from center
-    for target_idx in range(num_targets_needed):
-        if target_idx < 3:
-            # Simple approach: use farthest apart weight pairs for first 3 targets
-            weight_distances = torch.cdist(weights, weights, p=2)
-            
-            if target_idx == 0:
-                # Find the pair with maximum distance
-                max_dist_idx = torch.argmax(weight_distances)
-                i, j = divmod(max_dist_idx.item(), n_weights)
-            elif target_idx == 1:
-                # Find second most distant pair
-                flat_distances = weight_distances.flatten()
-                sorted_indices = torch.argsort(flat_distances, descending=True)
-                # Skip the maximum (which is at index 0) and find the next unique pair
-                for idx in sorted_indices[1:]:
-                    i, j = divmod(idx.item(), n_weights)
-                    if i != j:  # Make sure it's not diagonal
-                        break
-            else:  # target_idx == 2
-                # Find third most distant pair
-                flat_distances = weight_distances.flatten()
-                sorted_indices = torch.argsort(flat_distances, descending=True)
-                # Skip first few and find another unique pair
-                for idx in sorted_indices[n_weights:]:
-                    i, j = divmod(idx.item(), n_weights)
-                    if i != j:
-                        break
-            
-            # Create target as midpoint with offset
-            midpoint = (weights[i] + weights[j]) / 2
-            
-            # Add random offset to separate targets further
-            offset_direction = torch.randn_like(midpoint)
-            offset_direction = offset_direction / (torch.norm(offset_direction) + 1e-8)
-            offset_scale = torch.norm(weights[i] - weights[j]) * 0.2
-            vertex = midpoint + offset_scale * offset_direction
-                
-        else:
-            # For additional targets beyond the first 3, use simpler random generation
-            # Generate target around the weight center with random offset
-            offset_direction = torch.randn_like(weight_center)
-            offset_direction = offset_direction / (torch.norm(offset_direction) + 1e-8)
-            
-            # Use a moderate offset scale based on weight distribution
-            weight_std = torch.norm(weights - weight_center.unsqueeze(0), dim=1).std()
-            offset_scale = weight_std * (0.5 + torch.rand(1).item())  # Random scale
-            vertex = weight_center + offset_scale * offset_direction
-        
-        vertices.append(vertex)
-        degrees.append(2)
-        pbar.update(1)
-    
-    pbar.close()
-    
-    # Verify targets are well-separated
-    if len(vertices) > 1:
-        target_tensor = torch.stack(vertices)
-        target_distances = torch.cdist(target_tensor, target_tensor, p=2)
-        # Zero out diagonal
-        target_distances.fill_diagonal_(float('inf'))
-        min_distance = target_distances.min().item()
-        print(f"Minimum distance between targets: {min_distance:.4f}")
+    vertices_torch = torch.stack(vertices)
+    degrees = [2] * len(vertices_torch)
     
     del weights
     gc.collect()
     
-    print(f"Generated {len(vertices)} spatially distributed Voronoi vertices")
-    return torch.stack(vertices) if vertices else None, degrees
-
+    return vertices_torch, degrees
 
 def select_target_vertices(vertices, degrees, n_targets):
     """Select target vertices prioritizing high-degree ones"""
@@ -136,14 +80,22 @@ def select_target_vertices(vertices, degrees, n_targets):
         selected_indices = sorted_indices[:n_targets]
         return vertices[selected_indices]
     else:
-        # Need to interpolate additional vertices
+        # Need to generate additional vertices
         selected_vertices = [vertices[i] for i in sorted_indices]
         
         # Generate additional vertices by interpolation
         while len(selected_vertices) < n_targets:
-            idx1, idx2 = random.sample(range(len(vertices)), 2)
-            alpha = random.uniform(0.3, 0.7)
-            new_vertex = alpha * vertices[idx1] + (1 - alpha) * vertices[idx2]
+            if len(vertices) == 1:
+                # Only one vertex, add noise to create variations
+                base_vertex = vertices[0]
+                noise = torch.randn_like(base_vertex) * 0.1 * torch.norm(base_vertex)
+                new_vertex = base_vertex + noise
+            else:
+                # Multiple vertices, interpolate between random pairs
+                idx1, idx2 = random.sample(range(len(vertices)), 2)
+                alpha = random.uniform(0.3, 0.7)
+                new_vertex = alpha * vertices[idx1] + (1 - alpha) * vertices[idx2]
+            
             selected_vertices.append(new_vertex)
         
         return torch.stack(selected_vertices[:n_targets])
