@@ -34,6 +34,25 @@ def extract_classifier_weights(model, class_list):
     return weights
 
 
+def generate_directional_targets(forget_centroids, retain_centroids, n_targets):
+    """Generate targets along shortest paths from forget to retain centroids"""
+    forget_tensor = torch.stack(list(forget_centroids.values()))
+    retain_tensor = torch.stack(list(retain_centroids.values()))
+    
+    targets = []
+    for f_centroid in forget_tensor:
+        # Find nearest retain centroid
+        distances = torch.norm(retain_tensor - f_centroid.unsqueeze(0), dim=1)
+        nearest_r = retain_tensor[torch.argmin(distances)]
+        
+        # Generate targets at multiple distances along this path
+        for alpha in [0.3, 0.5, 0.7, 0.9]:  # 30%, 50%, 70%, 90% toward retain
+            target = (1-alpha) * f_centroid + alpha * nearest_r
+            targets.append(target)
+    
+    return torch.stack(targets[:n_targets])
+
+
 def compute_voronoi_vertices_from_weights(weights_dict, max_vertices=50):
     """Generate targets on perpendicular bisectors between retain class pairs"""
     import gc
@@ -106,90 +125,53 @@ def select_target_vertices(vertices, degrees, n_targets):
         return torch.stack(selected_vertices[:n_targets])
 
 
-def assign_targets_to_classes(target_vertices, forget_classes, forget_centroids=None, method="simple", 
-                             retain_weights_stacked=None, forget_logits=None):
+def assign_targets_to_classes(target_vertices, forget_classes, forget_centroids=None):
     """Assign target vertices to forget classes with unique targets"""
     if target_vertices is None:
         return {}
     
     assignment = {}
     
-    if method == "simple":
-        # Random assignment ensuring unique targets per class
-        print("Using random target assignment with unique targets...")
-        
-        if len(target_vertices) < len(forget_classes):
-            print(f"Warning: Only {len(target_vertices)} targets available for {len(forget_classes)} forget classes")
-        
-        shuffled_targets = target_vertices[torch.randperm(len(target_vertices))]
-        total_distance = 0.0
-        valid_distances = 0
-        
-        for i, class_id in enumerate(forget_classes):
-            if i < len(shuffled_targets):
-                # Assign unique target to each forget class
-                assignment[class_id] = shuffled_targets[i]
-            else:
-                # If more forget classes than targets, assign to a random target (but warn)
-                target_idx = torch.randint(0, len(shuffled_targets), (1,)).item()
-                assignment[class_id] = shuffled_targets[target_idx]
-                print(f"Warning: Reusing target for forget class {class_id}")
-            
-            assigned_target = assignment[class_id]
-            
-            # Calculate travel distance if forget centroids available
-            if forget_centroids is not None and class_id in forget_centroids:
-                forget_centroid = forget_centroids[class_id]
-                
-                # Ensure both tensors are on the same device
-                if assigned_target.device != forget_centroid.device:
-                    forget_centroid = forget_centroid.to(assigned_target.device)
-                
-                distance = torch.norm(assigned_target - forget_centroid).item()
-                total_distance += distance
-                valid_distances += 1
-        
-        # Report average travel distance
-        if forget_centroids is not None and valid_distances > 0:
-            avg_distance = total_distance / valid_distances
-            print(f"Average travel distance to targets: {avg_distance:.4f}")
+    # Random assignment ensuring unique targets per class
+    print("Using random target assignment with unique targets...")
+    
+    if len(target_vertices) < len(forget_classes):
+        print(f"Warning: Only {len(target_vertices)} targets available for {len(forget_classes)} forget classes")
+    
+    shuffled_targets = target_vertices[torch.randperm(len(target_vertices))]
+    total_distance = 0.0
+    valid_distances = 0
+    
+    for i, class_id in enumerate(forget_classes):
+        if i < len(shuffled_targets):
+            # Assign unique target to each forget class
+            assignment[class_id] = shuffled_targets[i]
         else:
-            print("Average travel distance: Not calculated (no forget centroids available)")
+            # If more forget classes than targets, assign to a random target (but warn)
+            target_idx = torch.randint(0, len(shuffled_targets), (1,)).item()
+            assignment[class_id] = shuffled_targets[target_idx]
+            print(f"Warning: Reusing target for forget class {class_id}")
+        
+        assigned_target = assignment[class_id]
+        
+        # Calculate travel distance if forget centroids available
+        if forget_centroids is not None and class_id in forget_centroids:
+            forget_centroid = forget_centroids[class_id]
+            
+            # Ensure both tensors are on the same device
+            if assigned_target.device != forget_centroid.device:
+                forget_centroid = forget_centroid.to(assigned_target.device)
+            
+            distance = torch.norm(assigned_target - forget_centroid).item()
+            total_distance += distance
+            valid_distances += 1
     
-    elif method == "advance":
-        # Nearest target assignment using embedding-space distances to minimize MSE travel distance
-        if forget_centroids is None:
-            print("Warning: No forget centroids provided, falling back to random assignment")
-            return assign_targets_to_classes(target_vertices, forget_classes, None, "simple")
-        
-        print("Using adaptive assignment with embedding-space distances...")
-        total_distance = 0.0
-        
-        for class_id in forget_classes:
-            if class_id in forget_centroids:
-                forget_centroid = forget_centroids[class_id]
-                
-                # Ensure both tensors are on the same device
-                if target_vertices.device != forget_centroid.device:
-                    forget_centroid = forget_centroid.to(target_vertices.device)
-                
-                # Compute embedding-space distances to minimize actual MSE travel distance
-                distances = torch.norm(target_vertices - forget_centroid.unsqueeze(0), dim=1)
-                
-                # Assign to nearest vertex in embedding space
-                nearest_idx = torch.argmin(distances)
-                assignment[class_id] = target_vertices[nearest_idx]
-                
-                # Track distance for reporting
-                total_distance += distances[nearest_idx].item()
-        
-        # Report average travel distance
-        if len(assignment) > 0:
-            avg_distance = total_distance / len(assignment)
-            print(f"Average embedding-space travel distance to targets: {avg_distance:.4f}")
-    
+    # Report average travel distance
+    if forget_centroids is not None and valid_distances > 0:
+        avg_distance = total_distance / valid_distances
+        print(f"Average travel distance to targets: {avg_distance:.4f}")
     else:
-        raise ValueError(f"Unknown assignment method: {method}")
+        print("Average travel distance: Not calculated (no forget centroids available)")
     
     return assignment
 

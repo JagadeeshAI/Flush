@@ -9,7 +9,7 @@ def count_parameters(model):
     return total_params, trainable_params
 
 
-def get_model(num_classes, model_path=None, device="cpu"):
+def get_model(num_classes=100, model_path=None, device="cpu"):
     if model_path is not None:
         print(f"Loading model from checkpoint: {model_path}")
         checkpoint = torch.load(model_path, map_location=device)
@@ -17,7 +17,7 @@ def get_model(num_classes, model_path=None, device="cpu"):
         model = timm.create_model(
             "deit_tiny_patch16_224",
             pretrained=True,
-            num_classes=num_classes
+            num_classes=100
         )
         
         lora_config = LoraConfig(

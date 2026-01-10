@@ -102,8 +102,8 @@ def evaluate_model(model, data_dir, batch_size, forget_classes, retain_classes, 
                 total += labels.size(0)
         return (correct / total) * 100 if total > 0 else 0.0
     
-    forget_acc = compute_acc((0, 49), 1.0) if forget_classes else 0.0
-    retain_acc = compute_acc((50, 99), 0.1) if retain_classes else 0.0
+    forget_acc = compute_acc((0, 44), 1.0) if forget_classes else 0.0
+    retain_acc = compute_acc((45, 89), 0.1) if retain_classes else 0.0
     return forget_acc, retain_acc
 
 

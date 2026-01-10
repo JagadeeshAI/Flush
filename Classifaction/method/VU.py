@@ -12,11 +12,11 @@ from tqdm import tqdm
 
 
 class VoronoiUnlearning:
-    def __init__(self, model_path, forget_classes, retain_classes, device="cuda", method="simple", 
+    def __init__(self, model_path, forget_classes, retain_classes, device="cuda", 
                  use_regularization=False, lambda_reg=1e-3, enable_visualization=False, 
                  vis_output_dir="visualizations", use_color=True):
         self.device, self.forget_classes, self.retain_classes = device, forget_classes, retain_classes
-        self.method, self.use_regularization, self.lambda_reg = method, use_regularization, lambda_reg
+        self.use_regularization, self.lambda_reg = use_regularization, lambda_reg
         self.enable_visualization = enable_visualization
         
         num_classes = len(forget_classes) + len(retain_classes)
@@ -38,25 +38,13 @@ class VoronoiUnlearning:
         self.forget_centroids = compute_class_centroids(embeddings, labels, self.forget_classes)
         del embeddings, labels; gc.collect()
         
-        # Step 1: Generate vertices from weights  
-        retain_weights = extract_classifier_weights(self.model, self.retain_classes)
-        vertices, degrees = compute_voronoi_vertices_from_weights(retain_weights, max_vertices=50)
-        target_vertices = select_target_vertices(vertices, degrees, len(self.forget_classes))
+        # Step 1: Generate targets along forget→retain paths
+        target_vertices = generate_directional_targets(self.forget_centroids, self.retain_centroids, 
+                                                     len(self.forget_classes) * 4)  # 4 targets per forget class
+        print(f"Generated {len(target_vertices)} directional targets along forget→retain paths")
         
-        # Compute forget centroids in weight space for better assignment
-        retain_weights_stacked = torch.stack(list(retain_weights.values()))  # [n_retain_classes, embed_dim]
-        forget_logits = {}
-        for class_id, centroid in self.forget_centroids.items():
-            # Ensure same device for matrix multiplication
-            if centroid.device != retain_weights_stacked.device:
-                centroid = centroid.to(retain_weights_stacked.device)
-            # Compute logits: centroid · W  
-            logits = centroid @ retain_weights_stacked.T  # [n_retain_classes]
-            forget_logits[class_id] = logits
-        
-        # Step 2: Assign targets to classes (advance uses logit-space distances)
-        self.target_assignment = assign_targets_to_classes(target_vertices, self.forget_classes, self.forget_centroids, 
-                                                         self.method, retain_weights_stacked, forget_logits)
+        # Step 2: Assign targets to classes
+        self.target_assignment = assign_targets_to_classes(target_vertices, self.forget_classes, self.forget_centroids)
         
         # Step 3: Then orthogonalize assigned targets
         forget_weights = extract_classifier_weights(self.model, self.forget_classes)
@@ -86,7 +74,7 @@ class VoronoiUnlearning:
             print(f"Reassigned viz classes to separated targets (indices: {selected_idx})")
         
         print(f"Setup complete: {len(self.target_assignment)} targets assigned")
-        del target_vertices, retain_weights, forget_weights, forget_weight_vectors; gc.collect()
+        del target_vertices, forget_weights, forget_weight_vectors; gc.collect()
     
     def compute_losses(self, batch, global_step, is_forget=True):
         """Compute losses for forget or retain batch"""
@@ -104,7 +92,7 @@ class VoronoiUnlearning:
             loss_retain_mse = compute_retain_loss(embeddings, labels, self.retain_centroids)
             logits = self.model(imgs)
             loss_retain_ce = nn.CrossEntropyLoss()(logits, labels)
-            total_loss = loss_retain_mse + loss_retain_ce * 0.1
+            total_loss = loss_retain_mse + loss_retain_ce * 0.4
             components = {'retain_mse': loss_retain_mse.item(), 'retain_ce': loss_retain_ce.item()}
         
         if self.use_regularization and global_step > 1000:
@@ -119,9 +107,9 @@ class VoronoiUnlearning:
     def unlearn(self, data_dir, batch_size=32, epochs=5, lr=1e-4):
         """Main unlearning loop"""
         # Setup data loaders
-        forget_loader, _, _ = get_dataloaders(data_dir, batch_size, class_range=(0, 49), data_ratio=1.0)
-        retain_loader, _, _ = get_dataloaders(data_dir, batch_size, class_range=(50, 99), data_ratio=0.1)
-        combined_loader, _, _ = get_dataloaders(data_dir, batch_size, class_range=(0, 99), data_ratio=0.1)
+        forget_loader, _, _ = get_dataloaders(data_dir, batch_size, class_range=(0, 44), data_ratio=1.0)
+        retain_loader, _, _ = get_dataloaders(data_dir, batch_size, class_range=(45, 89), data_ratio=0.1)
+        combined_loader, _, _ = get_dataloaders(data_dir, batch_size, class_range=(0, 89), data_ratio=0.1)
         
         self.setup_targets(combined_loader)
         
@@ -140,10 +128,12 @@ class VoronoiUnlearning:
         # Timing variables
         step_start_time = time.time()
         total_start_time = time.time()
+        total_training_time = 0.0  # Track pure training time excluding evaluations
         
         # Training loop
         pbar = tqdm(range(max_steps), desc="Training")
         for step in range(1, max_steps + 1):
+            training_step_start = time.time()
             self.model.train()
             
             # Process forget and retain batches
@@ -160,6 +150,9 @@ class VoronoiUnlearning:
                 for k, v in comps.items(): losses[k] = losses.get(k, 0.0) + v
                 losses['count'] += 1
             
+            # Add this step's training time (excluding evaluation)
+            total_training_time += time.time() - training_step_start
+            
             # Progress and validation
             if losses['count'] > 0:
                 avg_losses = {k: f"{v/losses['count']:.4f}" for k, v in losses.items() if k != 'count'}
@@ -167,8 +160,10 @@ class VoronoiUnlearning:
             
             if step % 25 == 0:
                 step_time = time.time() - step_start_time
+                eval_start = time.time()
                 f_acc, r_acc = evaluate_model(self.model, data_dir, batch_size//2, self.forget_classes, self.retain_classes, self.device)
-                print(f"\nStep {step} - Forget: {f_acc:.2f}% | Retain: {r_acc:.2f}% | Time: {step_time:.2f}s")
+                eval_time = time.time() - eval_start
+                print(f"\nStep {step} - Forget: {f_acc:.2f}% | Retain: {r_acc:.2f}% | Step Time: {step_time:.2f}s | Training Time So Far: {total_training_time:.1f}s")
                 if self.enable_visualization: create_visualization_step(self.visualizer, self.model, step, data_dir, batch_size, self.device, self.target_assignment)
                 losses = {'forget': 0.0, 'constraint': 0.0, 'retain_mse': 0.0, 'retain_ce': 0.0, 'reg': 0.0, 'count': 0}
                 step_start_time = time.time()
@@ -180,6 +175,8 @@ class VoronoiUnlearning:
         total_time = time.time() - total_start_time
         print(f"\n=== Training Complete ===")
         print(f"Total time: {total_time:.2f}s ({total_time/60:.2f} min)")
+        print(f"Pure training time (excluding evaluations): {total_training_time:.2f}s ({total_training_time/60:.2f} min)")
+        print(f"Evaluation overhead: {total_time - total_training_time:.2f}s")
         
         return self.model
     
@@ -188,7 +185,6 @@ class VoronoiUnlearning:
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--method', choices=['simple', 'advance'], default='simple')
     parser.add_argument('--epochs', type=int, default=20)
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--lr', type=float, default=1e-4)
@@ -201,17 +197,17 @@ def main():
     
     DATA_DIR, MODEL_PATH = "/media/jag/volD2/cifer100/cifer", "checkpoints/best.pth"
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    forget_classes, retain_classes = list(range(0, 50)), list(range(50, 100))
+    forget_classes, retain_classes = list(range(0, 44)), list(range(45, 89))
     
-    print(f"=== Voronoi Unlearning ({args.method}) ===")
+    print(f"=== Voronoi Unlearning ===")
     vu = VoronoiUnlearning(MODEL_PATH, forget_classes, retain_classes, DEVICE, 
-                          method=args.method, use_regularization=args.use_reg=='yes', lambda_reg=args.lambda_reg,
+                          use_regularization=args.use_reg=='yes', lambda_reg=args.lambda_reg,
                           enable_visualization=args.enable_viz, vis_output_dir=args.viz_dir, use_color=not args.grayscale)
     
     model = vu.unlearn(DATA_DIR, args.batch_size, args.epochs, args.lr)
     torch.save({'model_state': model.state_dict(), 'forget_classes': forget_classes, 
-               'retain_classes': retain_classes, 'method': args.method}, f'voronoi_unlearned_{args.method}.pth')
-    print(f"Model saved to 'voronoi_unlearned_{args.method}.pth'")
+               'retain_classes': retain_classes}, 'voronoi_unlearned.pth')
+    print(f"Model saved to 'voronoi_unlearned.pth'")
     
     if args.enable_viz and vu.visualizer:
         print(f"Animation script: {vu.visualizer.create_animation_script(fps=2)}")

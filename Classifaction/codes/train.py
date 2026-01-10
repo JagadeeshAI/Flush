@@ -1,12 +1,12 @@
 import torch
 import torch.nn as nn
 from tqdm import tqdm
-from data import get_dataloaders
-from utils import get_model
+from codes.data import get_dataloaders
+from codes.utils import get_model
 
 # ---------------- CONFIG ----------------
 DATA_DIR = "/media/jag/volD2/cifer100/cifer"
-EPOCHS = 50
+EPOCHS = 5
 BATCH_SIZE = 64
 LR = 3e-4
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -51,11 +51,17 @@ def validate(model, loader, criterion):
 
 
 def main():
-    train_loader, val_loader, num_classes = get_dataloaders(
-        DATA_DIR, BATCH_SIZE
+    train_loader, val_loader, _ = get_dataloaders(
+        DATA_DIR, BATCH_SIZE, class_range=(45, 89),data_ratio=1.0
+    )
+    _, forget_val, _ = get_dataloaders(
+        DATA_DIR, BATCH_SIZE, class_range=(00, 44)
+    )
+    _, retain_val, _ = get_dataloaders(
+        DATA_DIR, BATCH_SIZE, class_range=(45, 89)
     )
 
-    model = get_model(num_classes, model_path="checkpoints/best.pth", device=DEVICE)
+    model = get_model(100, model_path=None, device=DEVICE)
 
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
@@ -70,9 +76,18 @@ def main():
         val_loss, val_acc = validate(
             model, val_loader, criterion
         )
+        forget_val_loss, forget_val_acc = validate(
+            model, forget_val, criterion
+        )
+        retain_val_loss, retain_val_acc = validate(
+            model, retain_val, criterion
+        )
 
         print(f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
         print(f"Val   Loss: {val_loss:.4f} | Val   Acc: {val_acc:.4f}")
+
+        print(f"Forget Val   Loss: {forget_val_loss:.4f} | Forget Val   Acc: {forget_val_acc:.4f}")
+        print(f"Retain Val   Loss: {retain_val_loss:.4f} | Retain Val   Acc: {retain_val_acc:.4f}")
 
         torch.save(
             {
@@ -80,7 +95,7 @@ def main():
                 "model_state": model.state_dict(),
                 "optimizer_state": optimizer.state_dict(),
             },
-            f"checkpoints/best.pth"
+            f"checkpoints/ideal.pth"
         )
 
 
