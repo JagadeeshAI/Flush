@@ -6,27 +6,20 @@ import time
 
 from codes.data import get_dataloaders
 from codes.utils import get_model
-from utils.utils import extract_embeddings, extract_features, compute_class_centroids, evaluate_model, get_visualization_data, create_visualization_step
+from utilities.utils import extract_embeddings, extract_features, compute_class_centroids, evaluate_model
 from method.utils import *
 from tqdm import tqdm
 
 
 class VoronoiUnlearning:
     def __init__(self, model_path, forget_classes, retain_classes, device="cuda", 
-                 use_regularization=False, lambda_reg=1e-3, enable_visualization=False, 
-                 vis_output_dir="visualizations", use_color=True):
+                 use_regularization=False, lambda_reg=1e-3):
         self.device, self.forget_classes, self.retain_classes = device, forget_classes, retain_classes
         self.use_regularization, self.lambda_reg = use_regularization, lambda_reg
-        self.enable_visualization = enable_visualization
         
         num_classes = len(forget_classes) + len(retain_classes)
         self.model = get_model(num_classes, model_path=model_path, device=device)
-        self.target_assignment = self.retain_centroids = self.forget_centroids = self.visualizer = None
-        
-        if enable_visualization:
-            from visual import TSNEVoronoiVisualizer
-            self.visualizer = TSNEVoronoiVisualizer(self.model, forget_classes, retain_classes, 
-                                                   device=device, output_dir=vis_output_dir, use_color=use_color)
+        self.target_assignment = self.retain_centroids = self.forget_centroids = None
     
     def setup_targets(self, dataloader):
         """Setup target assignment using classifier weights"""
@@ -58,20 +51,6 @@ class VoronoiUnlearning:
             orthogonalized_target = orthogonalize_embeddings_to_weights(assigned_target, forget_weight_vectors)
             self.target_assignment[class_id] = orthogonalized_target.squeeze(0)
         
-        # MOVE THIS LINE HERE (was at line 49)
-        if self.visualizer: self.visualizer.setup_visualization(get_visualization_data(dataloader))
-        
-        # ADD THIS BLOCK (new)
-        if self.visualizer:
-            all_targets = torch.stack(list(self.target_assignment.values()))
-            distances = torch.cdist(all_targets, all_targets)
-            selected_idx = [distances.sum(dim=1).argmax().item()]
-            for _ in range(2):
-                min_dists = distances[:, selected_idx].min(dim=1)[0]
-                selected_idx.append(min_dists.argmax().item())
-            for i, class_id in enumerate([0, 1, 2]):
-                self.target_assignment[class_id] = all_targets[selected_idx[i]]
-            print(f"Reassigned viz classes to separated targets (indices: {selected_idx})")
         
         print(f"Setup complete: {len(self.target_assignment)} targets assigned")
         del target_vertices, forget_weights, forget_weight_vectors; gc.collect()
@@ -117,7 +96,6 @@ class VoronoiUnlearning:
         print("\n=== Initial Evaluation ===")
         forget_acc, retain_acc = evaluate_model(self.model, data_dir, batch_size//2, self.forget_classes, self.retain_classes, self.device)
         print(f"Forget Acc: {forget_acc:.2f}% | Retain Acc: {retain_acc:.2f}%")
-        if self.enable_visualization: create_visualization_step(self.visualizer, self.model, 0, data_dir, batch_size, self.device, self.target_assignment)
         
         # Training setup
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr)
@@ -164,7 +142,6 @@ class VoronoiUnlearning:
                 f_acc, r_acc = evaluate_model(self.model, data_dir, batch_size//2, self.forget_classes, self.retain_classes, self.device)
                 eval_time = time.time() - eval_start
                 print(f"\nStep {step} - Forget: {f_acc:.2f}% | Retain: {r_acc:.2f}% | Step Time: {step_time:.2f}s | Training Time So Far: {total_training_time:.1f}s")
-                if self.enable_visualization: create_visualization_step(self.visualizer, self.model, step, data_dir, batch_size, self.device, self.target_assignment)
                 losses = {'forget': 0.0, 'constraint': 0.0, 'retain_mse': 0.0, 'retain_ce': 0.0, 'reg': 0.0, 'count': 0}
                 step_start_time = time.time()
             
@@ -190,9 +167,6 @@ def main():
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--use-reg', choices=['yes', 'no'], default='no')
     parser.add_argument('--lambda-reg', type=float, default=0.01)
-    parser.add_argument('--enable-viz', action='store_true')
-    parser.add_argument('--viz-dir', default='visualizations')
-    parser.add_argument('--grayscale', action='store_true')
     args = parser.parse_args()
     
     DATA_DIR, MODEL_PATH = "/media/jag/volD2/cifer100/cifer", "checkpoints/best.pth"
@@ -201,16 +175,12 @@ def main():
     
     print(f"=== Voronoi Unlearning ===")
     vu = VoronoiUnlearning(MODEL_PATH, forget_classes, retain_classes, DEVICE, 
-                          use_regularization=args.use_reg=='yes', lambda_reg=args.lambda_reg,
-                          enable_visualization=args.enable_viz, vis_output_dir=args.viz_dir, use_color=not args.grayscale)
+                          use_regularization=args.use_reg=='yes', lambda_reg=args.lambda_reg)
     
     model = vu.unlearn(DATA_DIR, args.batch_size, args.epochs, args.lr)
     torch.save({'model_state': model.state_dict(), 'forget_classes': forget_classes, 
                'retain_classes': retain_classes}, 'voronoi_unlearned.pth')
     print(f"Model saved to 'voronoi_unlearned.pth'")
-    
-    if args.enable_viz and vu.visualizer:
-        print(f"Animation script: {vu.visualizer.create_animation_script(fps=2)}")
 
 
 if __name__ == "__main__":
