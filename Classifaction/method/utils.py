@@ -7,14 +7,13 @@ from scipy.spatial import Voronoi
 from sklearn.decomposition import PCA
 
 def extract_classifier_weights(model, class_list):
-    """Extract classifier head weights for specified classes"""
     weights = {}
     
     # Access the classifier head
     if hasattr(model, 'base_model'):
         # For LoRA wrapped model
         if hasattr(model.base_model, 'head'):
-            head_weight = model.base_model.head.weight  # Shape: [num_classes, embed_dim]
+            head_weight = model.base_model.head.weight 
         elif hasattr(model.base_model, 'model') and hasattr(model.base_model.model, 'head'):
             head_weight = model.base_model.model.head.weight
         else:
